@@ -723,6 +723,28 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     [recipes, selectedMeals, manualShoppingItems]
   );
 
+  // Keep the active trip card in sync with edits made inside the trip header.
+  // Without this, going Home -> Open Trip can reload the older trip snapshot from
+  // the Trips list and appear to "lose" recently entered details.
+  useEffect(() => {
+    if (!activeTripId || !trip) return;
+    setTrips((prev) => {
+      let changed = false;
+      const next = prev.map((record) => {
+        if (record.id !== activeTripId) return record;
+        const updated = {
+          ...record,
+          name: trip.name,
+          destinations: clone(trip.destinations || []),
+          departureDate: trip.departureDate || record.departureDate || "",
+        };
+        if (JSON.stringify(record) !== JSON.stringify(updated)) changed = true;
+        return updated;
+      });
+      return changed ? next : prev;
+    });
+  }, [trip, activeTripId]);
+
   // ── Online / offline detection ─────────────────────────────────────────────
   // When the device comes back online, push any changes made while offline.
 
@@ -977,7 +999,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
       syncTimerRef.current = setTimeout(async () => {
         await pushToSupabase(stateObj);
         pendingSyncRef.current = false;
-      }, 1500);
+      }, 350);
     }
   }, [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, selectedMeals, manualShoppingItems, shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user]);
 
@@ -986,7 +1008,14 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
   // ── Trip management ────────────────────────────────────────────────────────
   const saveTripRecord = (newTrip) => {
-    const record = { id: uid("trip"), name: newTrip.name, destinations: clone(newTrip.destinations), status: "Current", createdAt: new Date().toLocaleDateString() };
+    const record = {
+      ...clone(newTrip),
+      id: newTrip.id || uid("trip"),
+      name: newTrip.name,
+      destinations: clone(newTrip.destinations || []),
+      status: "Current",
+      createdAt: new Date().toLocaleDateString(),
+    };
     setTrips((prev) => [record, ...prev.map((t) => ({ ...t, status: t.status === "Current" ? "Past" : t.status }))]);
     setActiveTripId(record.id);
   };
@@ -1005,12 +1034,18 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   };
 
   const openTrip = (record) => {
-    const opened = { name: record.name, destinations: clone(record.destinations || starterDestinations) };
+    const opened = {
+      ...clone(record),
+      name: record.name,
+      destinations: clone(record.destinations || starterDestinations),
+    };
+    // These fields belong to the home trip card, not the editable trip plan.
+    delete opened.status;
+    delete opened.createdAt;
+
     setTrip(opened);
     setTasks(buildTasks(appTemplate, opened.destinations));
     setActiveTripId(record.id);
-    setSelectedMeals([]);
-    setShoppingChecks([]);
     setActiveChecklist("prep");
     setActiveTab("trip");
   };
