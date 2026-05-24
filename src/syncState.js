@@ -194,7 +194,10 @@ function mergeArray(localArray, cloudArray, path, localMeta, cloudMeta) {
       mergedItem = localItem || cloudItem;
     }
 
-    const itemTime = getItemTime(mergedItem, Math.max(getRootTime(localMeta), getRootTime(cloudMeta)));
+    // Deletions are item-level. Do not let an unrelated newer root document
+    // timestamp resurrect an older copy of this item from another device.
+    // Only a newer edit to the same item should beat a tombstone.
+    const itemTime = getItemTime(mergedItem, 0);
     if (deletedAt && deletedAt >= itemTime) continue;
     resultMap.set(key, mergedItem);
   }
