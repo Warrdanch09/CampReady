@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { supabase, hasSupabase } from "./supabaseClient";
 import AuthScreen from "./AuthScreen";
-import { mergeStates } from "./mergeState";
+import { mergeStates, prepareStateForSave, getClientId } from "./syncState";
 
 // -----------------------------------------------------------------------------
 // Constants / seed data
@@ -473,12 +473,13 @@ export default function App() {
         );
         if (!mounted) return;
 
+        setInitialData(loadSavedState());
+        setDataReady(true);
+
         if (session?.user) {
           setUser(session.user);
-          await hydrateUser(session.user, { blockScreen: true });
-        } else {
-          setInitialData(loadSavedState());
-          setDataReady(true);
+          // Local-first: render immediately, then hydrate/sync in the background.
+          hydrateUser(session.user, { blockScreen: false });
         }
       } catch (error) {
         console.warn("Auth boot failed or timed out, falling back to signed-out/local mode:", error);
@@ -523,8 +524,10 @@ export default function App() {
 
       if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
         setUser(session.user);
-        await hydrateUser(session.user, { blockScreen: event === "SIGNED_IN" });
+        setInitialData(loadSavedState());
+        setDataReady(true);
         setAuthReady(true);
+        hydrateUser(session.user, { blockScreen: false });
       }
     });
 
@@ -542,11 +545,14 @@ export default function App() {
 
   const handleAuth = async (nextUser) => {
     setUser(nextUser);
-    await hydrateUser(nextUser, { blockScreen: true });
+    setInitialData(loadSavedState());
+    setDataReady(true);
     setAuthReady(true);
+    // Do not block login on cloud sync; sync runs in the background.
+    hydrateUser(nextUser, { blockScreen: false });
   };
 
-  if (!authReady || (hasSupabase && user && !dataReady)) return <LoadingScreen />;
+  if (!authReady) return <LoadingScreen />;
 
   if (hasSupabase && passwordRecovery && user) {
     return <ResetPasswordScreen onComplete={() => setPasswordRecovery(false)} onSignOut={handleSignOut} />;
@@ -658,6 +664,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   const stateRef       = useRef(null);   // always mirrors latest saved state
   const pendingSyncRef = useRef(false);  // true when localStorage is ahead of cloud
   const suppressPushRef = useRef(false); // true when state just arrived from cloud — prevents push loop
+  const clientIdRef = useRef(getClientId());
 
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
@@ -721,7 +728,10 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   // Called after a reconnect merge so the UI immediately reflects remote changes.
   const applyMergedState = useCallback((merged) => {
     // Signal the save effect not to push this back to Supabase — it just came from there.
+    // Save immediately so the follow-up render does not strip sync metadata.
     suppressPushRef.current = true;
+    saveState(merged);
+    stateRef.current = merged;
     if (merged.activeChecklist !== undefined) setActiveChecklist(merged.activeChecklist);
     if (merged.trip            !== undefined) setTrip(merged.trip);
     if (merged.trips           !== undefined) setTrips(merged.trips);
@@ -940,21 +950,22 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   // Only attempt Supabase write when online; set pendingSync flag when offline
   // so the reconnect handler knows to push when signal returns.
   useEffect(() => {
-    const stateObj = {
-      lastModified: Date.now(),
-      activeChecklist, trip, trips, activeTripId, appTemplate, tasks,
-      family, activeMember, recipes, selectedMeals, manualShoppingItems,
-      shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes,
-    };
-
-    saveState(stateObj);       // always write locally, even offline
-    stateRef.current = stateObj;
-
-    // This update came from the cloud — don't push it right back (loop prevention).
+    // This update came from the cloud — don't push it right back (loop prevention)
+    // and don't overwrite the merged metadata we already saved in applyMergedState.
     if (suppressPushRef.current) {
       suppressPushRef.current = false;
       return;
     }
+
+    const rawState = {
+      activeChecklist, trip, trips, activeTripId, appTemplate, tasks,
+      family, activeMember, recipes, selectedMeals, manualShoppingItems,
+      shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes,
+    };
+    const stateObj = prepareStateForSave(stateRef.current, rawState, clientIdRef.current);
+
+    saveState(stateObj);       // always write locally, even offline
+    stateRef.current = stateObj;
 
     if (!isOnlineRef.current) {
       pendingSyncRef.current = true;
