@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { supabase, hasSupabase } from "./supabaseClient";
 import AuthScreen from "./AuthScreen";
-import { mergeStates, prepareStateForSave, getClientId } from "./syncState";
+import { mergeStates, prepareStateForSave, getClientId, stripSyncMetadata } from "./syncState";
 
 // -----------------------------------------------------------------------------
 // Constants / seed data
@@ -648,11 +648,13 @@ function ResetPasswordScreen({ onComplete, onSignOut }) {
 // -----------------------------------------------------------------------------
 
 function CampReadyApp({ user, initialData, onSignOut }) {
-  // Priority: cloud data > localStorage > hardcoded default
+  // Keep raw sync metadata for merging, but strip it before initializing UI state.
+  const rawInitialState = useMemo(() => initialData || loadSavedState(), [initialData]);
+  const uiInitialState = useMemo(() => stripSyncMetadata(rawInitialState), [rawInitialState]);
+
   const getInitial = (key, fallback) => {
-    if (initialData?.[key] !== undefined) return initialData[key];
-    const ls = loadSavedState();
-    return ls?.[key] !== undefined ? ls[key] : fallback;
+    if (uiInitialState?.[key] !== undefined) return uiInitialState[key];
+    return fallback;
   };
 
   // Start as 'offline' if we're already offline when the component mounts
@@ -661,7 +663,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   );
   const syncTimerRef   = useRef(null);
   const isOnlineRef    = useRef(typeof navigator !== "undefined" ? navigator.onLine : true);
-  const stateRef       = useRef(null);   // always mirrors latest saved state
+  const stateRef       = useRef(rawInitialState || null);   // raw sync state with metadata
   const pendingSyncRef = useRef(false);  // true when localStorage is ahead of cloud
   const suppressPushRef = useRef(false); // true when state just arrived from cloud — prevents push loop
   const clientIdRef = useRef(getClientId());
@@ -727,31 +729,28 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   // Applies a fully-merged state object to all component state setters.
   // Called after a reconnect merge so the UI immediately reflects remote changes.
   const applyMergedState = useCallback((merged) => {
-    // Signal the save effect not to push this back to Supabase — it just came from there.
-    // Save immediately so the follow-up render does not strip sync metadata.
+    // Save raw sync metadata for future merges, but never apply metadata to UI state.
     suppressPushRef.current = true;
     saveState(merged);
     stateRef.current = merged;
-    if (merged.activeChecklist !== undefined) setActiveChecklist(merged.activeChecklist);
-    if (merged.trip            !== undefined) setTrip(merged.trip);
-    if (merged.trips           !== undefined) setTrips(merged.trips);
-    if (merged.activeTripId    !== undefined) setActiveTripId(merged.activeTripId);
-    if (merged.appTemplate     !== undefined) setAppTemplate(merged.appTemplate);
-    if (merged.tasks           !== undefined) setTasks(merged.tasks);
-    if (merged.family          !== undefined) setFamily(merged.family);
-    if (merged.activeMember    !== undefined) setActiveMember(merged.activeMember);
-    if (merged.recipes         !== undefined) setRecipes(merged.recipes);
-    if (merged.selectedMeals   !== undefined) setSelectedMeals(merged.selectedMeals);
-    if (merged.manualShoppingItems !== undefined) setManualShoppingItems(merged.manualShoppingItems);
-    if (merged.shoppingChecks  !== undefined) setShoppingChecks(merged.shoppingChecks);
-    if (merged.maintenanceItems !== undefined) setMaintenanceItems(merged.maintenanceItems);
-    if (merged.rvConfig        !== undefined) setRvConfig(merged.rvConfig);
-    if (merged.towVehicle      !== undefined) setTowVehicle(merged.towVehicle);
-    if (merged.rvNotes         !== undefined) setRvNotes(merged.rvNotes);
-    // Note: do NOT call saveState here — the save effect runs after React
-    // processes these setters and handles localStorage + stateRef.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // setters are stable; no deps needed
+    const ui = stripSyncMetadata(merged) || {};
+    if (ui.activeChecklist !== undefined) setActiveChecklist(ui.activeChecklist);
+    if (ui.trip !== undefined) setTrip(ui.trip);
+    if (ui.trips !== undefined) setTrips(ui.trips);
+    if (ui.activeTripId !== undefined) setActiveTripId(ui.activeTripId);
+    if (ui.appTemplate !== undefined) setAppTemplate(ui.appTemplate);
+    if (ui.tasks !== undefined) setTasks(ui.tasks);
+    if (ui.family !== undefined) setFamily(ui.family);
+    if (ui.activeMember !== undefined) setActiveMember(ui.activeMember);
+    if (ui.recipes !== undefined) setRecipes(ui.recipes);
+    if (ui.selectedMeals !== undefined) setSelectedMeals(ui.selectedMeals);
+    if (ui.manualShoppingItems !== undefined) setManualShoppingItems(ui.manualShoppingItems);
+    if (ui.shoppingChecks !== undefined) setShoppingChecks(ui.shoppingChecks);
+    if (ui.maintenanceItems !== undefined) setMaintenanceItems(ui.maintenanceItems);
+    if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
+    if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
+    if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
+  }, []);
 
   useEffect(() => {
     const handleOnline = async () => {

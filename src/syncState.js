@@ -274,6 +274,10 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+export function stripSyncMetadata(value) {
+  return stripMeta(value);
+}
+
 function stripMeta(value) {
   if (Array.isArray(value)) return value.map(stripMeta);
   if (!isPlainObject(value)) return value;
