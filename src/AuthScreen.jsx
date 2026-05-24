@@ -19,7 +19,16 @@ export default function AuthScreen({ onAuth }) {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const { data, error: err } = await supabase.auth.signUp({ email, password });
+        const { data, error: err } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            // Always redirect back to wherever the app is actually running.
+            // Without this Supabase falls back to the Site URL set in the
+            // dashboard, which defaults to http://localhost:3000 on new projects.
+            emailRedirectTo: window.location.origin,
+          },
+        });
         if (err) throw err;
         if (data.user && !data.session) {
           // Email confirmation required
