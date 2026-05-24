@@ -378,9 +378,11 @@ function SyncBadge({ status }) {
 // -----------------------------------------------------------------------------
 
 export default function App() {
-  const [authReady, setAuthReady]     = useState(false);
-  const [user, setUser]               = useState(null);
-  const [initialData, setInitialData] = useState(null);
+  const [authReady, setAuthReady]         = useState(false);
+  const [user, setUser]                   = useState(null);
+  const [initialData, setInitialData]     = useState(null);
+  // True when the user has clicked a password-reset link — shows the reset form
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     if (!hasSupabase) {
@@ -406,24 +408,17 @@ export default function App() {
           const cloudData = data?.data;
 
           if (cloudData && localState) {
-            // Both devices have data — field-level CRDT merge so no one loses work.
-            // This handles the case where you were offline and made changes,
-            // AND another device also made changes while you were offline.
             const merged = mergeStates(localState, cloudData);
             setInitialData(merged);
-            saveState(merged); // keep localStorage in sync with merged result
-
-            // Push merged state back to cloud so all devices converge.
+            saveState(merged);
             supabase
               .from("user_data")
               .upsert({ id: session.user.id, data: merged }, { onConflict: "id" })
               .catch((e) => console.warn("Background merge push failed:", e));
           } else {
-            // Only one source exists — use it as-is.
             setInitialData(cloudData || localState);
           }
         } catch (e) {
-          // Network error (offline when loading) — fall back to local.
           console.warn("Cloud load failed, using local data:", e);
           setInitialData(localState);
         }
@@ -433,7 +428,17 @@ export default function App() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
-      if (event === "SIGNED_OUT") { setUser(null); setInitialData(null); }
+      if (event === "SIGNED_OUT") {
+        setUser(null);
+        setInitialData(null);
+        setPasswordRecovery(false);
+      }
+      // Fired when the user clicks a password-reset email link
+      if (event === "PASSWORD_RECOVERY") {
+        setUser(session?.user ?? null);
+        setPasswordRecovery(true);
+        setAuthReady(true);
+      }
     });
 
     return () => { mounted = false; subscription.unsubscribe(); };
@@ -442,9 +447,16 @@ export default function App() {
   const handleSignOut = async () => {
     if (hasSupabase) await supabase.auth.signOut();
     clearSavedState();
+    setPasswordRecovery(false);
   };
 
   if (!authReady) return <LoadingScreen />;
+
+  // Password reset link clicked — show the "set new password" form
+  if (hasSupabase && passwordRecovery && user) {
+    return <ResetPasswordScreen onComplete={() => setPasswordRecovery(false)} onSignOut={handleSignOut} />;
+  }
+
   if (hasSupabase && !user) return <AuthScreen onAuth={setUser} />;
   return <CampReadyApp user={user} initialData={initialData} onSignOut={handleSignOut} />;
 }
@@ -455,6 +467,76 @@ function LoadingScreen() {
       <div className="text-center">
         <div className="mb-3 text-5xl">🏕️</div>
         <p className="font-medium text-slate-500">Loading CampReady…</p>
+      </div>
+    </div>
+  );
+}
+
+// Shown after the user clicks a password-reset email link
+function ResetPasswordScreen({ onComplete, onSignOut }) {
+  const [password, setPassword]   = useState("");
+  const [confirm, setConfirm]     = useState("");
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState("");
+  const [success, setSuccess]     = useState(false);
+
+  const handleReset = async () => {
+    setError("");
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (password !== confirm)  { setError("Passwords don't match."); return; }
+    setLoading(true);
+    try {
+      const { error: err } = await supabase.auth.updateUser({ password });
+      if (err) throw err;
+      setSuccess(true);
+      setTimeout(() => onComplete(), 2000);
+    } catch (err) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <div className="mb-3 text-5xl">🏕️</div>
+          <h1 className="text-3xl font-bold text-slate-900">CampReady</h1>
+        </div>
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-5 text-xl font-bold">Set a new password</h2>
+          {error   && <div className="mb-4 rounded-2xl border border-red-200   bg-red-50   px-4 py-3 text-sm text-red-700">{error}</div>}
+          {success && <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">Password updated! Taking you back to the app…</div>}
+          {!success && (
+            <>
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">New password</label>
+                  <input type="password" autoComplete="new-password"
+                    className="w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:border-slate-400"
+                    placeholder="At least 6 characters"
+                    value={password} onChange={(e) => setPassword(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Confirm new password</label>
+                  <input type="password" autoComplete="new-password"
+                    className="w-full rounded-2xl border px-4 py-3 text-sm outline-none focus:border-slate-400"
+                    placeholder="Same password again"
+                    value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+                </div>
+              </div>
+              <button type="button" onClick={handleReset} disabled={loading}
+                className="mt-5 w-full rounded-2xl bg-slate-900 px-4 py-3 font-semibold text-white disabled:opacity-60">
+                {loading ? "Updating…" : "Set new password"}
+              </button>
+              <button type="button" onClick={onSignOut}
+                className="mt-3 block w-full text-center text-sm font-semibold text-slate-400 hover:text-slate-600">
+                Cancel — sign out
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -617,7 +699,72 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     };
   }, [user, applyMergedState]);
 
-  // ── Cloud sync ─────────────────────────────────────────────────────────────
+  // ── Real-time sync ────────────────────────────────────────────────────────
+  // Listen for changes pushed by other devices via Supabase Realtime.
+  // Requires: ALTER TABLE public.user_data REPLICA IDENTITY FULL;
+  // and Realtime enabled for the table in the Supabase dashboard.
+  useEffect(() => {
+    if (!hasSupabase || !user) return;
+
+    const channel = supabase
+      .channel(`user-data-${user.id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "user_data", filter: `id=eq.${user.id}` },
+        (payload) => {
+          const cloudData = payload.new?.data;
+          if (!cloudData || !stateRef.current) return;
+
+          const cloudTime = cloudData.lastModified || 0;
+          const localTime = stateRef.current.lastModified || 0;
+
+          // Only apply if the cloud has changes we don't already have.
+          // (Ignore updates we triggered ourselves — our lastModified will be equal or newer.)
+          if (cloudTime > localTime) {
+            const merged = mergeStates(stateRef.current, cloudData);
+            applyMergedState(merged);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user, applyMergedState]);
+
+  // ── Window focus sync ─────────────────────────────────────────────────────
+  // When the user switches back to this tab/window, do a lightweight pull
+  // to catch any changes from other devices. Fallback for when real-time
+  // isn't set up or misses an event.
+  useEffect(() => {
+    if (!hasSupabase || !user) return;
+
+    const handleFocus = async () => {
+      if (!isOnlineRef.current || !stateRef.current) return;
+      try {
+        const { data } = await supabase
+          .from("user_data")
+          .select("data")
+          .eq("id", user.id)
+          .single();
+
+        const cloudData = data?.data;
+        if (!cloudData) return;
+
+        const cloudTime = cloudData.lastModified || 0;
+        const localTime = stateRef.current.lastModified || 0;
+
+        if (cloudTime > localTime) {
+          const merged = mergeStates(stateRef.current, cloudData);
+          applyMergedState(merged);
+        }
+      } catch {
+        // Silently fail — focus sync is best-effort
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [user, applyMergedState]);
   const pushToSupabase = useCallback(async (stateObj) => {
     if (!hasSupabase || !user) return;
     setSyncStatus("saving");
@@ -740,9 +887,9 @@ function CampReadyApp({ user, initialData, onSignOut }) {
       <div className="mx-auto max-w-6xl space-y-4">
 
         {activeTab === "home" ? (
-          <HomeHeader syncStatus={syncStatus} />
+          <HomeHeader syncStatus={syncStatus} user={user} onSignOut={onSignOut} />
         ) : activeTab === "maintenance" ? (
-          <MaintenanceHeader setActiveTab={setActiveTab} syncStatus={syncStatus} />
+          <MaintenanceHeader setActiveTab={setActiveTab} syncStatus={syncStatus} user={user} onSignOut={onSignOut} />
         ) : activeTab === "template" ? null : (
           <TripHeader trip={trip} setTrip={setTrip} stats={stats} setActiveTab={setActiveTab} syncStatus={syncStatus} />
         )}
@@ -775,12 +922,26 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 // Home / headers
 // -----------------------------------------------------------------------------
 
-function HomeHeader({ syncStatus }) {
+function HomeHeader({ syncStatus, user, onSignOut }) {
   return (
     <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-medium text-slate-500">CampReady</div>
-        <SyncBadge status={syncStatus} />
+        <div className="flex items-center gap-3">
+          <SyncBadge status={syncStatus} />
+          {user && (
+            <div className="flex items-center gap-2">
+              <span className="hidden text-xs text-slate-400 sm:block">{user.email}</span>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <h1 className="mt-1 text-2xl font-bold md:text-3xl">RV Camping Trip Planner</h1>
       <p className="mt-2 text-sm text-slate-600">Start a trip, manage templates, maintain your RV, and prep for camping.</p>
@@ -788,12 +949,19 @@ function HomeHeader({ syncStatus }) {
   );
 }
 
-function MaintenanceHeader({ setActiveTab, syncStatus }) {
+function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut }) {
   return (
     <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <button type="button" onClick={() => setActiveTab("home")} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-100">← Back to Home</button>
-        <SyncBadge status={syncStatus} />
+        <div className="flex items-center gap-3">
+          <SyncBadge status={syncStatus} />
+          {user && (
+            <button type="button" onClick={onSignOut} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              Sign out
+            </button>
+          )}
+        </div>
       </div>
       <div className="mt-4 text-sm font-medium text-slate-500">CampReady</div>
       <h1 className="mt-1 text-2xl font-bold md:text-3xl">RV Maintenance Tracker</h1>

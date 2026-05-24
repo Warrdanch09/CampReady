@@ -51,3 +51,16 @@ create trigger set_updated_at
 -- ============================================================
 -- Done. Your Supabase project is ready for CampReady.
 -- ============================================================
+
+-- ============================================================
+-- Real-time sync setup
+-- Run this to enable live updates across devices.
+-- ============================================================
+
+-- 1. Allow Postgres to broadcast full row contents on change
+--    (required for postgres_changes subscriptions)
+ALTER TABLE public.user_data REPLICA IDENTITY FULL;
+
+-- 2. In the Supabase dashboard you also need to:
+--    Database → Replication → Tables → toggle "user_data" ON
+--    (this cannot be done via SQL)
