@@ -2,10 +2,10 @@
  * mergeState.js — CRDT-style field-level merge for CampReady
  *
  * Design rules:
- *   Additions  → union  (items added on any device are kept)
- *   Booleans   → OR     (checked/packed on any device stays that way)
- *   Scalars    → newer lastModified timestamp wins
- *   Deletions  → additions win (safest default; a stale item is recoverable, lost work is not)
+ *   Additions  → union  (items added on any device are always kept)
+ *   Booleans   → OR     (checked/packed on any device stays checked)
+ *   Edits      → newer overall document timestamp wins per-section
+ *   Deletions  → additions win (safest default; a stale item beats lost work)
  *   UI state   → always local (don't jump tabs on the user mid-session)
  */
 
@@ -21,58 +21,48 @@ export function mergeStates(local, cloud) {
   const cloudTime = cloud.lastModified || 0;
 
   return {
-    // Always take the maximum so the merged document sorts as "most recent"
     lastModified: Math.max(localTime, cloudTime),
 
-    // ── UI / navigation state ─────────────────────────────────────────────
-    // Never let a sync operation disrupt the user's current view.
-    activeTab:      local.activeTab,
+    // ── UI / navigation — never change on the user ────────────────────────
+    activeTab:       local.activeTab,
     activeChecklist: local.activeChecklist,
-    activeMember:   local.activeMember,
-    activeTripId:   local.activeTripId,
+    activeMember:    local.activeMember,
+    activeTripId:    local.activeTripId,
 
     // ── Trip metadata ─────────────────────────────────────────────────────
-    // Scalar blob — newer document's value wins.
     trip:        newerWins(local.trip, cloud.trip, localTime, cloudTime),
-    trips:       mergeTrips(local.trips, cloud.trips),
+    trips:       mergeById(local.trips, cloud.trips, localTime, cloudTime),
     appTemplate: newerWins(local.appTemplate, cloud.appTemplate, localTime, cloudTime),
 
-    // ── Checklists ────────────────────────────────────────────────────────
-    // Items: union by ID. done/na flags: OR merge.
+    // ── Checklists — OR merge for booleans, union for additions ──────────
     tasks: mergeTasks(local.tasks, cloud.tasks),
 
-    // ── Family packing ────────────────────────────────────────────────────
-    // Members: union by ID. Items within each member: union by name, packed=OR.
-    family: mergeFamily(local.family, cloud.family),
+    // ── Family packing — merge members by ID, items by name ──────────────
+    family: mergeFamily(local.family, cloud.family, localTime, cloudTime),
 
     // ── Food / shopping ───────────────────────────────────────────────────
-    recipes:             mergeById(local.recipes, cloud.recipes),
+    recipes:             mergeById(local.recipes, cloud.recipes, localTime, cloudTime),
     selectedMeals:       unionPrimitives(local.selectedMeals, cloud.selectedMeals),
-    manualShoppingItems: mergeById(local.manualShoppingItems, cloud.manualShoppingItems),
+    manualShoppingItems: mergeById(local.manualShoppingItems, cloud.manualShoppingItems, localTime, cloudTime),
     shoppingChecks:      mergeChecks(local.shoppingChecks, cloud.shoppingChecks),
 
     // ── Maintenance ───────────────────────────────────────────────────────
-    // Union of items; scalar fields (lastDone, notes) from whichever is newer.
-    maintenanceItems: mergeMaintenanceItems(
-      local.maintenanceItems,
-      cloud.maintenanceItems,
-      localTime,
-      cloudTime
+    maintenanceItems: mergeById(
+      local.maintenanceItems, cloud.maintenanceItems, localTime, cloudTime
     ),
 
     // ── RV configuration ──────────────────────────────────────────────────
-    // Pure scalar blobs — newer timestamp wins for the whole object.
     rvConfig:   newerWins(local.rvConfig,   cloud.rvConfig,   localTime, cloudTime),
     towVehicle: newerWins(local.towVehicle, cloud.towVehicle, localTime, cloudTime),
-    rvNotes:    mergeById(local.rvNotes, cloud.rvNotes),
+    rvNotes:    mergeById(local.rvNotes, cloud.rvNotes, localTime, cloudTime),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** Scalar object merge: whichever document is newer wins entirely. */
+/** Scalar object: whichever document has the newer lastModified wins entirely. */
 function newerWins(a, b, timeA, timeB) {
   return timeA >= timeB ? a : b;
 }
@@ -80,14 +70,16 @@ function newerWins(a, b, timeA, timeB) {
 // ── Checklists ────────────────────────────────────────────────────────────
 
 /**
- * Merge the nested tasks object:
+ * Merge the nested tasks structure:
  *   tasks[sectionKey][groupName] = Task[]
  *
- * For each task matched by ID:
- *   done = A.done || B.done          (OR — once checked, stays checked)
- *   na   = !done && (A.na || B.na)   (OR — but done beats na)
+ * Per task (matched by ID):
+ *   done = A.done || B.done           (OR — once checked, stays checked)
+ *   na   = !done && (A.na || B.na)    (OR — but done beats na)
  *
  * Tasks present on only one device are included (union).
+ * NOTE: tasks are template-derived so we don't need timestamp preference —
+ * the only meaningful per-task changes are the boolean flags (OR-merged above).
  */
 function mergeTasks(tasksA, tasksB) {
   if (!tasksA) return tasksB || {};
@@ -135,11 +127,14 @@ function mergeTaskGroup(groupA, groupB) {
 
 /**
  * Merge family members by ID.
- * Within each member, merge packing items by name (items lack IDs).
  *
- * packed = A.packed || B.packed  (OR — once packed anywhere, stays packed)
+ * For EXISTING members:
+ *   - Scalar fields (name, emoji): newer document wins (so name changes propagate)
+ *   - Packing items: merged by name with OR for packed flag
+ *
+ * NEW members (only on one device): always included (union).
  */
-function mergeFamily(familyA, familyB) {
+function mergeFamily(familyA, familyB, timeA = 0, timeB = 0) {
   if (!familyA) return familyB || [];
   if (!familyB) return familyA;
 
@@ -150,11 +145,15 @@ function mergeFamily(familyA, familyB) {
   return allIds.map((id) => {
     const a = mapA.get(id);
     const b = mapB.get(id);
-    if (!a) return b;
-    if (!b) return a;
+    if (!a) return b; // new on device B
+    if (!b) return a; // new on device A
+
+    // For scalar fields (name, emoji): newer document's version wins.
+    // This ensures a name change on device A propagates to device B.
+    const preferred = timeA >= timeB ? a : b;
     return {
-      ...a,                                    // local wins for name/emoji edits
-      items: mergeFamilyItems(a.items, b.items),
+      ...preferred,                              // name, emoji from newer device
+      items: mergeFamilyItems(a.items, b.items), // items always OR-merged
     };
   });
 }
@@ -164,8 +163,6 @@ function mergeFamilyItems(itemsA, itemsB) {
   if (!itemsB) return itemsA;
 
   // Items have no IDs — match by lowercase name.
-  // Note: renaming an item on one device while the other is offline will
-  // result in both the old and new name appearing; this is the safe default.
   const mapA = new Map(itemsA.map((i) => [i.name.toLowerCase(), i]));
   const mapB = new Map(itemsB.map((i) => [i.name.toLowerCase(), i]));
   const allNames = [...new Set([...mapA.keys(), ...mapB.keys()])];
@@ -176,18 +173,47 @@ function mergeFamilyItems(itemsA, itemsB) {
     if (!a) return b;
     if (!b) return a;
     return {
-      ...a,                         // local wins for qty edits
-      packed: a.packed || b.packed, // OR — once packed on any device, stays packed
+      ...a,
+      packed: a.packed || b.packed, // OR — once packed anywhere, stays packed
     };
   });
 }
 
-// ── Shopping checks ───────────────────────────────────────────────────────
+// ── Generic array merge by ID ─────────────────────────────────────────────
 
 /**
- * shoppingChecks is { [itemKey]: boolean }
- * OR merge: once checked on any device, stays checked.
+ * Union of two arrays of objects with an `id` field.
+ *
+ * - Items only on one device: always included (union).
+ * - Items on both devices: newer document's version of the item wins.
+ *   This ensures edits (e.g. marking a maintenance item done, changing a
+ *   recipe name) from one device propagate to the other.
+ *
+ * timeA / timeB are the overall document lastModified values; they determine
+ * which device "owns" the edit on a given item when both have it.
  */
+function mergeById(arrA, arrB, timeA = 0, timeB = 0) {
+  if (!arrA) return arrB || [];
+  if (!arrB) return arrA;
+
+  const aIsNewer = timeA >= timeB;
+  const primary   = aIsNewer ? arrA : arrB; // existing items: prefer this version
+  const secondary = aIsNewer ? arrB : arrA;
+
+  const map = new Map(primary.map((item) => [item.id, { ...item }]));
+  for (const item of secondary) {
+    if (!map.has(item.id)) {
+      // Only exists on secondary device — union it in
+      map.set(item.id, { ...item });
+    }
+    // Existing item: primary (newer document) version already in map, leave it.
+  }
+  return Array.from(map.values());
+}
+
+// ── Shopping checks ───────────────────────────────────────────────────────
+
+/** OR merge: once checked on any device, stays checked. */
 function mergeChecks(checksA, checksB) {
   const result = { ...(checksA || {}) };
   for (const [key, val] of Object.entries(checksB || {})) {
@@ -196,69 +222,7 @@ function mergeChecks(checksA, checksB) {
   return result;
 }
 
-// ── Maintenance ───────────────────────────────────────────────────────────
-
-/**
- * Maintenance items have IDs.
- * Union of items from both devices.
- * For the same item, whichever device's document is newer wins the scalar
- * fields (lastDone, notes, frequency) — this lets "Mark done today" propagate
- * correctly from whichever device tapped it most recently.
- */
-function mergeMaintenanceItems(arrA, arrB, timeA, timeB) {
-  if (!arrA) return arrB || [];
-  if (!arrB) return arrA;
-
-  const localIsNewer = timeA >= timeB;
-  const primary   = localIsNewer ? arrA : arrB;
-  const secondary = localIsNewer ? arrB : arrA;
-
-  const map = new Map(primary.map((item) => [item.id, { ...item }]));
-  for (const item of secondary) {
-    if (!map.has(item.id)) {
-      // Added on the other device — keep it
-      map.set(item.id, { ...item });
-    }
-    // Existing item: primary (newer) version already in the map; leave it.
-  }
-
-  return Array.from(map.values());
-}
-
-// ── Generic helpers ───────────────────────────────────────────────────────
-
-/**
- * Union of two arrays of objects with an `id` field.
- * Items present on only one device are included.
- * For matching IDs, local (A) version wins — callers that need a different
- * strategy (e.g. maintenance) use their own function above.
- */
-function mergeById(arrA, arrB) {
-  if (!arrA) return arrB || [];
-  if (!arrB) return arrA;
-
-  const map = new Map(arrA.map((item) => [item.id, item]));
-  for (const item of arrB) {
-    if (!map.has(item.id)) {
-      map.set(item.id, item);
-    }
-    // Same ID exists locally: local version wins (could be improved with
-    // per-item timestamps if finer-grained control is needed in the future).
-  }
-  return Array.from(map.values());
-}
-
-/**
- * Union of two arrays of primitive values (e.g. selectedMeals string IDs).
- */
+/** Union of two arrays of primitive values (e.g. selectedMeals string IDs). */
 function unionPrimitives(a, b) {
   return [...new Set([...(a || []), ...(b || [])])];
-}
-
-/**
- * Trips: union by ID (same as mergeById).
- * Status fields are not merged — whichever device created the record wins.
- */
-function mergeTrips(tripsA, tripsB) {
-  return mergeById(tripsA, tripsB);
 }

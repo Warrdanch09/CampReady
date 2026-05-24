@@ -562,6 +562,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   const isOnlineRef    = useRef(typeof navigator !== "undefined" ? navigator.onLine : true);
   const stateRef       = useRef(null);   // always mirrors latest saved state
   const pendingSyncRef = useRef(false);  // true when localStorage is ahead of cloud
+  const suppressPushRef = useRef(false); // true when state just arrived from cloud — prevents push loop
 
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
@@ -624,6 +625,8 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   // Applies a fully-merged state object to all component state setters.
   // Called after a reconnect merge so the UI immediately reflects remote changes.
   const applyMergedState = useCallback((merged) => {
+    // Signal the save effect not to push this back to Supabase — it just came from there.
+    suppressPushRef.current = true;
     if (merged.activeChecklist !== undefined) setActiveChecklist(merged.activeChecklist);
     if (merged.trip            !== undefined) setTrip(merged.trip);
     if (merged.trips           !== undefined) setTrips(merged.trips);
@@ -640,7 +643,8 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     if (merged.rvConfig        !== undefined) setRvConfig(merged.rvConfig);
     if (merged.towVehicle      !== undefined) setTowVehicle(merged.towVehicle);
     if (merged.rvNotes         !== undefined) setRvNotes(merged.rvNotes);
-    saveState(merged);
+    // Note: do NOT call saveState here — the save effect runs after React
+    // processes these setters and handles localStorage + stateRef.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // setters are stable; no deps needed
 
@@ -718,12 +722,22 @@ function CampReadyApp({ user, initialData, onSignOut }) {
           const cloudTime = cloudData.lastModified || 0;
           const localTime = stateRef.current.lastModified || 0;
 
-          // Only apply if the cloud has changes we don't already have.
-          // (Ignore updates we triggered ourselves — our lastModified will be equal or newer.)
-          if (cloudTime > localTime) {
-            const merged = mergeStates(stateRef.current, cloudData);
-            applyMergedState(merged);
-          }
+          // Skip if timestamps are identical — this is almost certainly our own
+          // push bouncing back from Supabase. No need to merge with ourselves.
+          if (cloudTime === localTime) return;
+
+          // Always merge regardless of which timestamp is newer.
+          // Bug fix: the old `cloudTime > localTime` guard was blocking ALL updates
+          // from device A when device B had been active more recently — even when
+          // device A had NEW items (maintenance entries, trips, etc.) that device B
+          // had never seen. The merge function handles conflicts correctly on its own.
+          const merged = mergeStates(stateRef.current, cloudData);
+
+          // Only apply if the merge actually produces a different result.
+          // This avoids unnecessary re-renders when there's nothing new.
+          if (JSON.stringify(merged) === JSON.stringify(stateRef.current)) return;
+
+          applyMergedState(merged);
         }
       )
       .subscribe();
@@ -753,8 +767,14 @@ function CampReadyApp({ user, initialData, onSignOut }) {
         const cloudTime = cloudData.lastModified || 0;
         const localTime = stateRef.current.lastModified || 0;
 
-        if (cloudTime > localTime) {
-          const merged = mergeStates(stateRef.current, cloudData);
+        // Skip if timestamps match — nothing has changed
+        if (cloudTime === localTime) return;
+
+        // Always merge. The old cloudTime > localTime guard had the same problem
+        // as the real-time listener: it would miss new items on cloud when local
+        // was more recently active.
+        const merged = mergeStates(stateRef.current, cloudData);
+        if (JSON.stringify(merged) !== JSON.stringify(stateRef.current)) {
           applyMergedState(merged);
         }
       } catch {
@@ -786,17 +806,22 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   // so the reconnect handler knows to push when signal returns.
   useEffect(() => {
     const stateObj = {
-      lastModified: Date.now(), // timestamp used for conflict resolution on load
+      lastModified: Date.now(),
       activeChecklist, trip, trips, activeTripId, appTemplate, tasks,
       family, activeMember, recipes, selectedMeals, manualShoppingItems,
       shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes,
     };
 
     saveState(stateObj);       // always write locally, even offline
-    stateRef.current = stateObj; // keep ref current for reconnect handler
+    stateRef.current = stateObj;
+
+    // This update came from the cloud — don't push it right back (loop prevention).
+    if (suppressPushRef.current) {
+      suppressPushRef.current = false;
+      return;
+    }
 
     if (!isOnlineRef.current) {
-      // Device is offline — mark that cloud is behind local
       pendingSyncRef.current = true;
       setSyncStatus("offline");
       return;
