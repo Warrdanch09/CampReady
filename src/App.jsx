@@ -161,6 +161,36 @@ function formatDate(date) {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+function parseDateOnly(dateString) {
+  if (!dateString) return null;
+  const [year, month, day] = String(dateString).split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function formatDateRangeLabel(start, end) {
+  if (!start || !end) return "";
+  return `${start.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+}
+
+function buildDestinationDateRanges(departureDate, destinations) {
+  let cursor = parseDateOnly(departureDate);
+  return (destinations || []).map((dest) => {
+    if (!cursor) return "";
+    const nights = Math.max(1, Number(dest.nights) || 1);
+    const start = cursor;
+    const end = addDays(start, nights);
+    cursor = end;
+    return formatDateRangeLabel(start, end);
+  });
+}
+
 function daysBetween(a, b) { return Math.ceil((b.getTime() - a.getTime()) / 86400000); }
 
 function addFrequency(date, value, unit) {
@@ -670,8 +700,8 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
-  const [trip, setTrip]                     = useState(() => getInitial("trip", { name: "Memorial Weekend Camping", destinations: clone(starterDestinations) }));
-  const [trips, setTrips]                   = useState(() => getInitial("trips", [{ id: "trip-starter", name: "Memorial Weekend Camping", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]));
+  const [trip, setTrip]                     = useState(() => getInitial("trip", { name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations) }));
+  const [trips, setTrips]                   = useState(() => getInitial("trips", [{ id: "trip-starter", name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]));
   const [activeTripId, setActiveTripId]     = useState(() => getInitial("activeTripId", "trip-starter"));
   const [appTemplate, setAppTemplate]       = useState(() => getInitial("appTemplate", checklistTemplates));
   const [tasks, setTasks]                   = useState(() => getInitial("tasks", buildTasks(checklistTemplates, starterDestinations)));
@@ -1021,7 +1051,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   };
 
   const startTrip = () => {
-    const newTrip = { name: "New Camping Trip", destinations: [{ id: uid("dest"), name: "Destination TBD", nights: 3 }] };
+    const newTrip = { name: "New Camping Trip", departureDate: "", destinations: [{ id: uid("dest"), name: "Destination TBD", nights: 3 }] };
     saveTripRecord(newTrip);
     setTrip(newTrip);
     setTasks(buildTasks(appTemplate, newTrip.destinations));
@@ -1066,10 +1096,10 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
   const resetAppData = () => {
     clearSavedState();
-    const defaultTrip = { name: "Memorial Weekend Camping", destinations: clone(starterDestinations) };
+    const defaultTrip = { name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations) };
     setActiveChecklist("prep");
     setTrip(defaultTrip);
-    setTrips([{ id: "trip-starter", name: "Memorial Weekend Camping", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]);
+    setTrips([{ id: "trip-starter", name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]);
     setActiveTripId("trip-starter");
     setAppTemplate(checklistTemplates);
     setTasks(buildTasks(checklistTemplates, starterDestinations));
@@ -1217,37 +1247,128 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, deleteTrip, openTe
 }
 
 function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus }) {
-  const updateDestination = (id, updates) =>
-    setTrip((prev) => ({ ...prev, destinations: prev.destinations.map((d) => d.id === id ? { ...d, ...updates, nights: Math.max(1, Number(updates.nights ?? d.nights) || 1) } : d) }));
-  const addDestination = () =>
-    setTrip((prev) => ({ ...prev, destinations: [...prev.destinations, { id: uid("dest"), name: `Destination ${prev.destinations.length + 1}`, nights: 1 }] }));
-  const removeDestination = (id) =>
-    setTrip((prev) => prev.destinations.length === 1 ? prev : { ...prev, destinations: prev.destinations.filter((d) => d.id !== id) });
+  const dateRanges = useMemo(
+    () => buildDestinationDateRanges(trip.departureDate, trip.destinations),
+    [trip.departureDate, trip.destinations]
+  );
+
+  const updateDestination = (id, updates) => {
+    setTrip((prev) => ({
+      ...prev,
+      destinations: prev.destinations.map((d) => {
+        if (d.id !== id) return d;
+
+        // Allow the nights input to be temporarily blank while the user edits it.
+        // We normalize blank/invalid values to 1 anywhere calculations need a number.
+        if (Object.prototype.hasOwnProperty.call(updates, "nights")) {
+          const nextNights = updates.nights === "" ? "" : Math.max(1, Number(updates.nights) || 1);
+          return { ...d, ...updates, nights: nextNights };
+        }
+
+        return { ...d, ...updates };
+      }),
+    }));
+  };
+
+  const addDestination = () => {
+    setTrip((prev) => ({
+      ...prev,
+      destinations: [
+        ...prev.destinations,
+        { id: uid("dest"), name: `Destination ${prev.destinations.length + 1}`, nights: 1 },
+      ],
+    }));
+  };
+
+  const removeDestination = (id) => {
+    setTrip((prev) =>
+      prev.destinations.length === 1
+        ? prev
+        : { ...prev, destinations: prev.destinations.filter((d) => d.id !== id) }
+    );
+  };
 
   return (
     <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <button type="button" onClick={() => setActiveTab("home")} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-100">← Back to Home</button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("home")}
+          className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-100"
+        >
+          ← Back to Home
+        </button>
         <div className="flex items-center gap-3">
           <SyncBadge status={syncStatus} />
           <div className="text-xs font-semibold text-slate-500">Active Trip</div>
         </div>
       </div>
+
       <div className="grid gap-4 md:grid-cols-[1fr_220px]">
         <div>
-          <input className="w-full bg-transparent text-2xl font-bold outline-none md:text-3xl" value={trip.name} onChange={(e) => setTrip({ ...trip, name: e.target.value })} />
+          <input
+            className="w-full bg-transparent text-2xl font-bold outline-none md:text-3xl"
+            value={trip.name}
+            onChange={(e) => setTrip({ ...trip, name: e.target.value })}
+          />
+
+          <div className="mt-3 max-w-xs">
+            <label className="block text-xs font-semibold text-slate-500">
+              Departure Date
+              <input
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm font-normal text-slate-900"
+                type="date"
+                value={trip.departureDate || ""}
+                onChange={(e) => setTrip({ ...trip, departureDate: e.target.value })}
+              />
+            </label>
+          </div>
+
           <div className="mt-3 space-y-2">
             <div className="text-xs font-semibold text-slate-500">Destinations / Stops</div>
-            {trip.destinations.map((dest) => (
-              <div key={dest.id} className="grid gap-2 sm:grid-cols-[1fr_90px_auto_auto]">
-                <input className="rounded-xl border px-3 py-2" value={dest.name} onChange={(e) => updateDestination(dest.id, { name: e.target.value })} />
-                <label className="rounded-xl border bg-white px-3 py-2 text-sm">Nights <input className="w-10 outline-none" type="number" min="1" value={dest.nights} onChange={(e) => updateDestination(dest.id, { nights: e.target.value })} /></label>
+            {trip.destinations.map((dest, index) => (
+              <div key={dest.id} className="grid gap-2 sm:grid-cols-[1fr_110px_auto_auto]">
+                <div>
+                  <input
+                    className="w-full rounded-xl border px-3 py-2"
+                    value={dest.name}
+                    onChange={(e) => updateDestination(dest.id, { name: e.target.value })}
+                  />
+                  {dateRanges[index] && (
+                    <div className="mt-1 text-xs font-medium text-slate-500">
+                      {dateRanges[index]}
+                    </div>
+                  )}
+                </div>
+
+                <label className="rounded-xl border bg-white px-3 py-2 text-sm">
+                  Nights
+                  <input
+                    className="ml-2 w-12 outline-none"
+                    type="number"
+                    min="1"
+                    value={dest.nights ?? ""}
+                    onChange={(e) => updateDestination(dest.id, { nights: e.target.value })}
+                    onBlur={(e) => {
+                      if (e.target.value === "") updateDestination(dest.id, { nights: 1 });
+                    }}
+                  />
+                </label>
+
                 <button type="button" onClick={addDestination} className="rounded-xl border bg-white px-3 py-2 font-bold">+</button>
-                <button type="button" onClick={() => removeDestination(dest.id)} disabled={trip.destinations.length === 1} className="rounded-xl border bg-white px-3 py-2 font-bold disabled:opacity-40">−</button>
+                <button
+                  type="button"
+                  onClick={() => removeDestination(dest.id)}
+                  disabled={trip.destinations.length === 1}
+                  className="rounded-xl border bg-white px-3 py-2 font-bold disabled:opacity-40"
+                >
+                  −
+                </button>
               </div>
             ))}
           </div>
         </div>
+
         <div>
           <div className="mb-1 flex justify-between text-sm"><span>Overall progress</span><span>{stats.percent}%</span></div>
           <Progress value={stats.percent} />
