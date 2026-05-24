@@ -377,72 +377,114 @@ function SyncBadge({ status }) {
 // Root component — handles auth and initial cloud load
 // -----------------------------------------------------------------------------
 
+async function loadAndMergeUserState(userId) {
+  const localState = loadSavedState();
+
+  try {
+    const { data, error } = await supabase
+      .from("user_data")
+      .select("data")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    const cloudData = data?.data || null;
+    const merged = cloudData && localState
+      ? mergeStates(localState, cloudData)
+      : cloudData || localState || null;
+
+    if (merged) {
+      saveState(merged);
+      await supabase
+        .from("user_data")
+        .upsert({ id: userId, data: merged }, { onConflict: "id" });
+    }
+
+    return merged;
+  } catch (error) {
+    console.warn("Cloud load failed, using local data:", error);
+    return localState;
+  }
+}
+
 export default function App() {
-  const [authReady, setAuthReady]         = useState(false);
-  const [user, setUser]                   = useState(null);
-  const [initialData, setInitialData]     = useState(null);
-  // True when the user has clicked a password-reset link — shows the reset form
+  const [authReady, setAuthReady] = useState(false);
+  const [dataReady, setDataReady] = useState(!hasSupabase);
+  const [user, setUser] = useState(null);
+  const [initialData, setInitialData] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
+
+  const hydrateUser = useCallback(async (nextUser) => {
+    if (!hasSupabase || !nextUser) {
+      setInitialData(loadSavedState());
+      setDataReady(true);
+      return;
+    }
+
+    setDataReady(false);
+    const merged = await loadAndMergeUserState(nextUser.id);
+    setInitialData(merged);
+    setDataReady(true);
+  }, []);
 
   useEffect(() => {
     if (!hasSupabase) {
       setAuthReady(true);
+      setDataReady(true);
       return;
     }
+
     let mounted = true;
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    const boot = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
       if (!mounted) return;
 
       if (session?.user) {
         setUser(session.user);
-        const localState = loadSavedState();
-
-        try {
-          const { data } = await supabase
-            .from("user_data")
-            .select("data")
-            .eq("id", session.user.id)
-            .single();
-
-          const cloudData = data?.data;
-
-          if (cloudData && localState) {
-            const merged = mergeStates(localState, cloudData);
-            setInitialData(merged);
-            saveState(merged);
-            supabase
-              .from("user_data")
-              .upsert({ id: session.user.id, data: merged }, { onConflict: "id" })
-              .catch((e) => console.warn("Background merge push failed:", e));
-          } else {
-            setInitialData(cloudData || localState);
-          }
-        } catch (e) {
-          console.warn("Cloud load failed, using local data:", e);
-          setInitialData(localState);
-        }
+        await hydrateUser(session.user);
+      } else {
+        setInitialData(loadSavedState());
+        setDataReady(true);
       }
-      setAuthReady(true);
-    });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (mounted) setAuthReady(true);
+    };
+
+    boot();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
+
       if (event === "SIGNED_OUT") {
         setUser(null);
         setInitialData(null);
         setPasswordRecovery(false);
+        setDataReady(true);
+        return;
       }
-      // Fired when the user clicks a password-reset email link
+
       if (event === "PASSWORD_RECOVERY") {
         setUser(session?.user ?? null);
         setPasswordRecovery(true);
         setAuthReady(true);
+        setDataReady(true);
+        return;
+      }
+
+      if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") && session?.user) {
+        setUser(session.user);
+        await hydrateUser(session.user);
+        setAuthReady(true);
       }
     });
 
-    return () => { mounted = false; subscription.unsubscribe(); };
-  }, []);
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [hydrateUser]);
 
   const handleSignOut = async () => {
     if (hasSupabase) await supabase.auth.signOut();
@@ -450,14 +492,19 @@ export default function App() {
     setPasswordRecovery(false);
   };
 
-  if (!authReady) return <LoadingScreen />;
+  const handleAuth = async (nextUser) => {
+    setUser(nextUser);
+    await hydrateUser(nextUser);
+    setAuthReady(true);
+  };
 
-  // Password reset link clicked — show the "set new password" form
+  if (!authReady || (hasSupabase && user && !dataReady)) return <LoadingScreen />;
+
   if (hasSupabase && passwordRecovery && user) {
     return <ResetPasswordScreen onComplete={() => setPasswordRecovery(false)} onSignOut={handleSignOut} />;
   }
 
-  if (hasSupabase && !user) return <AuthScreen onAuth={setUser} />;
+  if (hasSupabase && !user) return <AuthScreen onAuth={handleAuth} />;
   return <CampReadyApp user={user} initialData={initialData} onSignOut={handleSignOut} />;
 }
 
@@ -714,7 +761,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
       .channel(`user-data-${user.id}`)
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "user_data", filter: `id=eq.${user.id}` },
+        { event: "*", schema: "public", table: "user_data", filter: `id=eq.${user.id}` },
         (payload) => {
           const cloudData = payload.new?.data;
           if (!cloudData || !stateRef.current) return;
@@ -788,18 +835,43 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   const pushToSupabase = useCallback(async (stateObj) => {
     if (!hasSupabase || !user) return;
     setSyncStatus("saving");
+
     try {
+      // Match the Family Food Hub pattern: every push first pulls the current
+      // cloud snapshot, merges, then writes the converged snapshot back. This
+      // prevents a stale tab from overwriting changes made on another device
+      // when realtime/focus events were missed.
+      const { data, error: readError } = await supabase
+        .from("user_data")
+        .select("data")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (readError) throw readError;
+
+      const cloudData = data?.data || null;
+      const finalState = cloudData ? mergeStates(stateObj, cloudData) : stateObj;
+
       const { error } = await supabase
         .from("user_data")
-        .upsert({ id: user.id, data: stateObj }, { onConflict: "id" });
+        .upsert({ id: user.id, data: finalState }, { onConflict: "id" });
       if (error) throw error;
+
+      if (JSON.stringify(finalState) !== JSON.stringify(stateObj)) {
+        applyMergedState(finalState);
+      } else {
+        saveState(finalState);
+        stateRef.current = finalState;
+      }
+
       setSyncStatus("saved");
       setTimeout(() => setSyncStatus("idle"), 2500);
     } catch (e) {
       console.error("Sync error:", e);
+      pendingSyncRef.current = true;
       setSyncStatus("error");
     }
-  }, [user]);
+  }, [user, applyMergedState]);
 
   // Save to localStorage on every change (immediate, always).
   // Only attempt Supabase write when online; set pendingSync flag when offline
