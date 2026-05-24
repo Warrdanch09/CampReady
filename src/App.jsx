@@ -377,15 +377,29 @@ function SyncBadge({ status }) {
 // Root component — handles auth and initial cloud load
 // -----------------------------------------------------------------------------
 
+const SYNC_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, label, ms = SYNC_TIMEOUT_MS) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
+}
+
 async function loadAndMergeUserState(userId) {
   const localState = loadSavedState();
 
   try {
-    const { data, error } = await supabase
-      .from("user_data")
-      .select("data")
-      .eq("id", userId)
-      .maybeSingle();
+    const { data, error } = await withTimeout(
+      supabase
+        .from("user_data")
+        .select("data")
+        .eq("id", userId)
+        .maybeSingle(),
+      "Initial cloud load"
+    );
 
     if (error) throw error;
 
@@ -396,14 +410,19 @@ async function loadAndMergeUserState(userId) {
 
     if (merged) {
       saveState(merged);
-      await supabase
-        .from("user_data")
-        .upsert({ id: userId, data: merged }, { onConflict: "id" });
+      // Do not let the initial app boot depend forever on this write. The local
+      // save is enough to render; normal sync will retry if this upsert fails.
+      await withTimeout(
+        supabase
+          .from("user_data")
+          .upsert({ id: userId, data: merged }, { onConflict: "id" }),
+        "Initial cloud write"
+      );
     }
 
     return merged;
   } catch (error) {
-    console.warn("Cloud load failed, using local data:", error);
+    console.warn("Cloud load failed or timed out, using local data:", error);
     return localState;
   }
 }
@@ -415,17 +434,26 @@ export default function App() {
   const [initialData, setInitialData] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
 
-  const hydrateUser = useCallback(async (nextUser) => {
+  const hydrateUser = useCallback(async (nextUser, { blockScreen = true } = {}) => {
     if (!hasSupabase || !nextUser) {
       setInitialData(loadSavedState());
       setDataReady(true);
       return;
     }
 
-    setDataReady(false);
-    const merged = await loadAndMergeUserState(nextUser.id);
-    setInitialData(merged);
-    setDataReady(true);
+    if (blockScreen) setDataReady(false);
+
+    try {
+      const merged = await loadAndMergeUserState(nextUser.id);
+      setInitialData(merged || loadSavedState());
+    } catch (error) {
+      console.warn("Hydration failed, continuing with local data:", error);
+      setInitialData(loadSavedState());
+    } finally {
+      // Critical mobile fix: never leave the app permanently on Loading CampReady
+      // if Supabase/auth stalls while the tab is backgrounded or waking up.
+      setDataReady(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -438,18 +466,29 @@ export default function App() {
     let mounted = true;
 
     const boot = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!mounted) return;
+      try {
+        const { data: { session } } = await withTimeout(
+          supabase.auth.getSession(),
+          "Auth session load"
+        );
+        if (!mounted) return;
 
-      if (session?.user) {
-        setUser(session.user);
-        await hydrateUser(session.user);
-      } else {
+        if (session?.user) {
+          setUser(session.user);
+          await hydrateUser(session.user, { blockScreen: true });
+        } else {
+          setInitialData(loadSavedState());
+          setDataReady(true);
+        }
+      } catch (error) {
+        console.warn("Auth boot failed or timed out, falling back to signed-out/local mode:", error);
+        if (!mounted) return;
+        setUser(null);
         setInitialData(loadSavedState());
         setDataReady(true);
+      } finally {
+        if (mounted) setAuthReady(true);
       }
-
-      if (mounted) setAuthReady(true);
     };
 
     boot();
@@ -473,9 +512,18 @@ export default function App() {
         return;
       }
 
-      if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") && session?.user) {
+      if (event === "TOKEN_REFRESHED" && session?.user) {
+        // Token refreshes are frequent on mobile wake/resume. Do not block the
+        // whole UI for a cloud pull here; focus/realtime sync will catch changes.
         setUser(session.user);
-        await hydrateUser(session.user);
+        setAuthReady(true);
+        setDataReady(true);
+        return;
+      }
+
+      if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
+        setUser(session.user);
+        await hydrateUser(session.user, { blockScreen: event === "SIGNED_IN" });
         setAuthReady(true);
       }
     });
@@ -494,7 +542,7 @@ export default function App() {
 
   const handleAuth = async (nextUser) => {
     setUser(nextUser);
-    await hydrateUser(nextUser);
+    await hydrateUser(nextUser, { blockScreen: true });
     setAuthReady(true);
   };
 
@@ -704,11 +752,14 @@ function CampReadyApp({ user, initialData, onSignOut }) {
           // Fetch whatever cloud state exists right now — another device may have
           // made changes while we were both offline, so we must merge rather than
           // blindly overwrite.
-          const { data } = await supabase
-            .from("user_data")
-            .select("data")
-            .eq("id", user.id)
-            .single();
+          const { data } = await withTimeout(
+            supabase
+              .from("user_data")
+              .select("data")
+              .eq("id", user.id)
+              .single(),
+            "Reconnect cloud pull"
+          );
 
           const cloudData = data?.data;
           const finalState = cloudData
@@ -720,9 +771,12 @@ function CampReadyApp({ user, initialData, onSignOut }) {
           applyMergedState(finalState);
 
           // Push the merged result to cloud so all devices converge.
-          const { error } = await supabase
-            .from("user_data")
-            .upsert({ id: user.id, data: finalState }, { onConflict: "id" });
+          const { error } = await withTimeout(
+            supabase
+              .from("user_data")
+              .upsert({ id: user.id, data: finalState }, { onConflict: "id" }),
+            "Reconnect cloud push"
+          );
           if (error) throw error;
 
           pendingSyncRef.current = false;
@@ -802,11 +856,14 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     const handleFocus = async () => {
       if (!isOnlineRef.current || !stateRef.current) return;
       try {
-        const { data } = await supabase
-          .from("user_data")
-          .select("data")
-          .eq("id", user.id)
-          .single();
+        const { data } = await withTimeout(
+          supabase
+            .from("user_data")
+            .select("data")
+            .eq("id", user.id)
+            .single(),
+          "Focus cloud pull"
+        );
 
         const cloudData = data?.data;
         if (!cloudData) return;
@@ -841,20 +898,26 @@ function CampReadyApp({ user, initialData, onSignOut }) {
       // cloud snapshot, merges, then writes the converged snapshot back. This
       // prevents a stale tab from overwriting changes made on another device
       // when realtime/focus events were missed.
-      const { data, error: readError } = await supabase
-        .from("user_data")
-        .select("data")
-        .eq("id", user.id)
-        .maybeSingle();
+      const { data, error: readError } = await withTimeout(
+        supabase
+          .from("user_data")
+          .select("data")
+          .eq("id", user.id)
+          .maybeSingle(),
+        "Sync cloud pull"
+      );
 
       if (readError) throw readError;
 
       const cloudData = data?.data || null;
       const finalState = cloudData ? mergeStates(stateObj, cloudData) : stateObj;
 
-      const { error } = await supabase
-        .from("user_data")
-        .upsert({ id: user.id, data: finalState }, { onConflict: "id" });
+      const { error } = await withTimeout(
+        supabase
+          .from("user_data")
+          .upsert({ id: user.id, data: finalState }, { onConflict: "id" }),
+        "Sync cloud push"
+      );
       if (error) throw error;
 
       if (JSON.stringify(finalState) !== JSON.stringify(stateObj)) {
