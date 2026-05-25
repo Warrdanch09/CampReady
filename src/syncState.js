@@ -150,8 +150,25 @@ function mergeObject(local, cloud, path, localMeta, cloudMeta) {
 
   for (const key of keys) {
     if (key === UPDATED_AT_KEY || key === FIELDS_KEY) continue;
+    const hasLocalKey = Object.prototype.hasOwnProperty.call(local || {}, key);
+    const hasCloudKey = Object.prototype.hasOwnProperty.call(cloud || {}, key);
     const localValue = local[key];
     const cloudValue = cloud[key];
+
+    // If a field exists on only one side, keep that explicit value. Do not let
+    // an unrelated newer root timestamp from the other device erase it. This is
+    // especially important for maps like shoppingChecks where keys are created
+    // lazily as the user checks items.
+    if (hasLocalKey && !hasCloudKey) {
+      result[key] = localValue;
+      mergedFields[key] = localFields[key] || getFieldTime(local, localFields, key, localMeta);
+      continue;
+    }
+    if (!hasLocalKey && hasCloudKey) {
+      result[key] = cloudValue;
+      mergedFields[key] = cloudFields[key] || getFieldTime(cloud, cloudFields, key, cloudMeta);
+      continue;
+    }
 
     if (Array.isArray(localValue) || Array.isArray(cloudValue) || isPlainObject(localValue) || isPlainObject(cloudValue)) {
       result[key] = mergeValue(localValue, cloudValue, `${path}.${key}`, localMeta, cloudMeta);

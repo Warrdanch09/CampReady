@@ -24,6 +24,59 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const pct = (done, total) => (total ? Math.round((done / total) * 100) : 0);
 const STORAGE_KEY = "campready-mvp-state-v1";
 
+function makeShoppingKey(item = {}) {
+  return [
+    String(item.name || "").trim().toLowerCase(),
+    String(item.unit || "").trim().toLowerCase(),
+    String(item.category || "Other").trim().toLowerCase(),
+    String(item.store || "Unassigned").trim().toLowerCase(),
+  ].join("|");
+}
+
+function normalizeShoppingStatuses(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item && (item.key || item.id))
+      .map((item) => ({
+        id: String(item.id || item.key),
+        key: String(item.key || item.id),
+        checked: Boolean(item.checked),
+      }));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.entries(value).map(([key, checked]) => ({
+      id: String(key),
+      key: String(key),
+      checked: Boolean(checked),
+    }));
+  }
+
+  return [];
+}
+
+function ensureStableIds(state) {
+  if (!state || typeof state !== "object") return state;
+  const next = clone(state);
+
+  if (Array.isArray(next.family)) {
+    next.family = next.family.map((member) => ({
+      ...member,
+      id: member.id || uid("member"),
+      items: (member.items || []).map((item) => ({
+        ...item,
+        id: item.id || uid("pack"),
+      })),
+    }));
+  }
+
+  next.shoppingStatuses = normalizeShoppingStatuses(next.shoppingStatuses || next.shoppingChecks);
+  delete next.shoppingChecks;
+  delete next.selectedMeals;
+
+  return next;
+}
+
 const loadSavedState = () => {
   if (typeof window === "undefined") return null;
   try {
@@ -162,7 +215,11 @@ function hasRealUserData(state) {
     hasMeaningfulConfig(state.rvConfig) ||
     hasMeaningfulConfig(state.towVehicle) ||
     hasMeaningfulTasks(state.tasks) ||
+    (Array.isArray(state.family) && state.family.some((m) => !isLegacySeedFamilyMember(m))) ||
+    (Array.isArray(state.recipes) && state.recipes.some((r) => !isLegacySeedRecipe(r))) ||
     (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0) ||
+    normalizeShoppingStatuses(state.shoppingStatuses || state.shoppingChecks).some((s) => s.checked) ||
+    (Array.isArray(state.maintenanceItems) && state.maintenanceItems.some((i) => !isLegacySeedMaintenance(i))) ||
     (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => hasMeaningfulConfig(n)))
   );
 }
@@ -175,7 +232,6 @@ function sanitizeSeedData(state) {
   }
   if (Array.isArray(next.family)) next.family = next.family.filter((m) => !isLegacySeedFamilyMember(m));
   if (Array.isArray(next.recipes)) next.recipes = next.recipes.filter((r) => !isLegacySeedRecipe(r));
-  if (Array.isArray(next.selectedMeals)) next.selectedMeals = next.selectedMeals.filter((id) => !["burgers", "pancakes", "tacos"].includes(id));
   if (Array.isArray(next.manualShoppingItems)) next.manualShoppingItems = next.manualShoppingItems.filter((i) => !isLegacySeedShoppingItem(i));
   if (Array.isArray(next.maintenanceItems)) next.maintenanceItems = next.maintenanceItems.filter((i) => !isLegacySeedMaintenance(i));
   if (Array.isArray(next.rvNotes)) next.rvNotes = next.rvNotes.filter((n) => !isLegacySeedNote(n));
@@ -186,7 +242,7 @@ function sanitizeSeedData(state) {
   if (isStarterTripRecord(next.trip) || !next.activeTripId) {
     next.trip = next.trips?.[0] ? { ...clone(next.trips[0]), status: undefined, createdAt: undefined } : clone(emptyTripState);
   }
-  return hasRealUserData(next) ? next : null;
+  return hasRealUserData(next) ? ensureStableIds(next) : null;
 }
 
 const defaultMaintenanceItems = [];
@@ -194,15 +250,15 @@ const defaultRecipes = [];
 
 function packTemplate(nights) {
   return [
-    { name: "Shirts", qty: nights + 1, packed: false },
-    { name: "Pants / shorts", qty: nights + 1, packed: false },
-    { name: "Underwear", qty: nights + 2, packed: false },
-    { name: "Socks", qty: nights + 2, packed: false },
-    { name: "Pajamas", qty: 1, packed: false },
-    { name: "Sweatshirt / jacket", qty: 1, packed: false },
-    { name: "Swimsuit", qty: 1, packed: false },
-    { name: "Shoes / sandals", qty: 1, packed: false },
-    { name: "Toiletries", qty: 1, packed: false },
+    { id: uid("pack"), name: "Shirts", qty: nights + 1, packed: false },
+    { id: uid("pack"), name: "Pants / shorts", qty: nights + 1, packed: false },
+    { id: uid("pack"), name: "Underwear", qty: nights + 2, packed: false },
+    { id: uid("pack"), name: "Socks", qty: nights + 2, packed: false },
+    { id: uid("pack"), name: "Pajamas", qty: 1, packed: false },
+    { id: uid("pack"), name: "Sweatshirt / jacket", qty: 1, packed: false },
+    { id: uid("pack"), name: "Swimsuit", qty: 1, packed: false },
+    { id: uid("pack"), name: "Shoes / sandals", qty: 1, packed: false },
+    { id: uid("pack"), name: "Toiletries", qty: 1, packed: false },
   ];
 }
 
@@ -309,7 +365,7 @@ function buildTasks(template, destinations) {
   return tasks;
 }
 
-function buildShoppingList(recipes, selectedMeals, manualItems) {
+function buildShoppingList(recipes, manualItems) {
   const map = new Map();
 
   // CampReady now treats every planned meal as part of the shopping list.
@@ -317,8 +373,8 @@ function buildShoppingList(recipes, selectedMeals, manualItems) {
   // intended workflow: if it is on the meal plan, its ingredients are needed.
   (recipes || []).forEach((meal) => {
     meal?.ingredients?.forEach((ing) => {
-      const key = `${ing.name}-${ing.unit}-${ing.category || "Other"}-${ing.store || "Unassigned"}`;
-      const existing = map.get(key) || { ...ing, category: ing.category || "Other", store: ing.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
+      const key = makeShoppingKey(ing);
+      const existing = map.get(key) || { ...ing, key, checkKey: key, category: ing.category || "Other", store: ing.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
       existing.qty += Number(ing.qty) || 1;
       existing.sources.push(meal.name);
       map.set(key, existing);
@@ -326,8 +382,8 @@ function buildShoppingList(recipes, selectedMeals, manualItems) {
   });
 
   manualItems.forEach((item) => {
-    const key = `${item.name}-${item.unit}-${item.category || "Other"}-${item.store || "Unassigned"}`;
-    const existing = map.get(key) || { ...item, category: item.category || "Other", store: item.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
+    const key = makeShoppingKey(item);
+    const existing = map.get(key) || { ...item, key, checkKey: key, category: item.category || "Other", store: item.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
     existing.qty += Number(item.qty) || 1;
     existing.sources = Array.from(new Set([...(existing.sources || []), "Manual"]));
     existing.manualIds.push(item.id);
@@ -783,9 +839,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [family, setFamily]                 = useState(() => getInitial("family", []));
   const [activeMember, setActiveMember]     = useState(() => getInitial("activeMember", null));
   const [recipes, setRecipes]               = useState(() => getInitial("recipes", []));
-  const [selectedMeals, setSelectedMeals]   = useState(() => getInitial("selectedMeals", []));
   const [manualShoppingItems, setManualShoppingItems] = useState(() => getInitial("manualShoppingItems", []));
-  const [shoppingChecks, setShoppingChecks] = useState(() => getInitial("shoppingChecks", {}));
+  const [shoppingStatuses, setShoppingStatuses] = useState(() => normalizeShoppingStatuses(getInitial("shoppingStatuses", getInitial("shoppingChecks", []))));
   const [maintenanceItems, setMaintenanceItems] = useState(() => getInitial("maintenanceItems", []));
   const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
   const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
@@ -824,9 +879,28 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   }), [recipes, trip.destinations]);
 
   const shoppingList = useMemo(
-    () => buildShoppingList(recipes, selectedMeals, manualShoppingItems),
-    [recipes, selectedMeals, manualShoppingItems]
+    () => buildShoppingList(recipes, manualShoppingItems),
+    [recipes, manualShoppingItems]
   );
+
+  const shoppingStatusMap = useMemo(() => {
+    const map = {};
+    normalizeShoppingStatuses(shoppingStatuses).forEach((status) => {
+      map[status.key] = Boolean(status.checked);
+    });
+    return map;
+  }, [shoppingStatuses]);
+
+  const toggleShoppingStatus = useCallback((key) => {
+    setShoppingStatuses((prev) => {
+      const normalized = normalizeShoppingStatuses(prev);
+      const exists = normalized.find((item) => item.key === key);
+      if (exists) {
+        return normalized.map((item) => item.key === key ? { ...item, checked: !item.checked } : item);
+      }
+      return [...normalized, { id: key, key, checked: true }];
+    });
+  }, []);
 
   // Keep the active trip card in sync with edits made inside the trip header.
   // Without this, going Home -> Open Trip can reload the older trip snapshot from
@@ -871,9 +945,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     if (ui.family !== undefined) setFamily(ui.family);
     if (ui.activeMember !== undefined) setActiveMember(ui.activeMember);
     if (ui.recipes !== undefined) setRecipes(ui.recipes);
-    if (ui.selectedMeals !== undefined) setSelectedMeals(ui.selectedMeals);
     if (ui.manualShoppingItems !== undefined) setManualShoppingItems(ui.manualShoppingItems);
-    if (ui.shoppingChecks !== undefined) setShoppingChecks(ui.shoppingChecks);
+    if (ui.shoppingStatuses !== undefined || ui.shoppingChecks !== undefined) setShoppingStatuses(normalizeShoppingStatuses(ui.shoppingStatuses || ui.shoppingChecks));
     if (ui.maintenanceItems !== undefined) setMaintenanceItems(ui.maintenanceItems);
     if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
     if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
@@ -1104,14 +1177,13 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     family,
     activeMember,
     recipes,
-    selectedMeals,
     manualShoppingItems,
-    shoppingChecks,
+    shoppingStatuses,
     maintenanceItems,
     rvConfig,
     towVehicle,
     rvNotes,
-  }), [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, selectedMeals, manualShoppingItems, shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes]);
+  }), [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, manualShoppingItems, shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes]);
 
   const exportBackup = useCallback(() => {
     const backup = {
@@ -1178,8 +1250,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
 
     const rawState = {
       activeChecklist, trip, trips, activeTripId, appTemplate, tasks,
-      family, activeMember, recipes, selectedMeals, manualShoppingItems,
-      shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes,
+      family, activeMember, recipes, manualShoppingItems,
+      shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes,
     };
     if (!hasRealUserData(rawState) && !hasRealUserData(stateRef.current)) {
       return;
@@ -1211,7 +1283,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         pendingSyncRef.current = false;
       }, 350);
     }
-  }, [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, selectedMeals, manualShoppingItems, shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user]);
+  }, [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, manualShoppingItems, shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user]);
 
   // Clean up timer on unmount
   useEffect(() => () => clearTimeout(syncTimerRef.current), []);
@@ -1244,9 +1316,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setTrip(newTrip);
     setTasks(newTripTasks);
     setRecipes([]);
-    setSelectedMeals([]);
     setManualShoppingItems([]);
-    setShoppingChecks({});
+    setShoppingStatuses([]);
     setActiveChecklist("prep");
     setActiveTab("trip");
   };
@@ -1320,7 +1391,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       return next;
     });
     setFamily((prev) => prev.map((m) => ({ ...m, items: m.items.map((i) => ({ ...i, packed: false })) })));
-    setShoppingChecks({});
+    setShoppingStatuses([]);
   };
 
   const resetAppData = () => {
@@ -1334,9 +1405,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setFamily([]);
     setActiveMember(null);
     setRecipes([]);
-    setSelectedMeals([]);
     setManualShoppingItems([]);
-    setShoppingChecks({});
+    setShoppingStatuses([]);
     setMaintenanceItems([]);
     setRvConfig({ rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" });
     setTowVehicle({ year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" });
@@ -1369,10 +1439,10 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
 
         {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} />}
         {activeTab === "template"   && <TemplateEditor appTemplate={appTemplate} setAppTemplate={setAppTemplate} goHome={() => setActiveTab("home")} />}
-        {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingChecks} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
+        {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "packing"    && <PackingView family={family} setFamily={setFamily} activeMember={activeMember} setActiveMember={setActiveMember} />}
-        {activeTab === "food"       && <FoodView destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} selectedMeals={selectedMeals} setSelectedMeals={setSelectedMeals} shoppingList={shoppingList} shoppingChecks={shoppingChecks} setShoppingChecks={setShoppingChecks} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
+        {activeTab === "food"       && <FoodView destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
         {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} />}
         {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
@@ -1660,7 +1730,7 @@ function TripDashboard({ tasks, family, shoppingList, shoppingChecks, setActiveT
   });
   const packed = family.reduce((sum, m) => sum + m.items.filter((i) => i.packed).length, 0);
   const packTotal = family.reduce((sum, m) => sum + m.items.length, 0);
-  const foodDone = shoppingList.filter((i) => shoppingChecks[`${i.name}-${i.unit}-${i.category}-${i.store}`]).length;
+  const foodDone = shoppingList.filter((i) => shoppingChecks[i.checkKey || i.key || `${i.name}-${i.unit}-${i.category || "Other"}-${i.store || "Unassigned"}`]).length;
   return (
     <div className="grid gap-4 md:grid-cols-3">
       {cards.map((c) => (
@@ -1765,7 +1835,7 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
 
   const addItem = () => {
     if (!newItem.trim() || !member) return;
-    setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...(m.items || []), { name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
+    setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...(m.items || []), { id: uid("pack"), name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
     setNewItem(""); setNewQty(1);
   };
   const update = (index, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).map((item, i) => i === index ? { ...item, ...updates } : item) } : m));
@@ -1785,7 +1855,7 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
       </div>
       <div className="space-y-2">
         {member?.items.map((item, index) => (
-          <div key={`${item.name}-${index}`} className={`rounded-2xl border p-3 ${item.packed ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}>
+          <div key={item.id || `${item.name}-${index}`} className={`rounded-2xl border p-3 ${item.packed ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}>
             <div className="grid gap-2 sm:grid-cols-[auto_80px_1fr_auto]">
               <button type="button" onClick={() => update(index, { packed: !item.packed })}>{item.packed ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
               <input className="rounded-xl border px-3 py-2 text-center" type="number" min="1" value={item.qty ?? ""} onChange={(e) => update(index, { qty: e.target.value })} />
@@ -1803,7 +1873,7 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
 // Food
 // -----------------------------------------------------------------------------
 
-function FoodView({ destinations, recipes, setRecipes, selectedMeals, setSelectedMeals, shoppingList, shoppingChecks, setShoppingChecks, manualShoppingItems, setManualShoppingItems }) {
+function FoodView({ destinations, recipes, setRecipes, shoppingList, shoppingChecks, toggleShoppingStatus, manualShoppingItems, setManualShoppingItems }) {
   const [mealForm, setMealForm] = useState({ name: "", type: "Dinner", destinationId: destinations[0]?.id || "", night: 1, ingredients: [] });
   const [ingredient, setIngredient] = useState({ name: "", qty: 1, unit: "pack", category: "Pantry" });
   const [manualItem, setManualItem] = useState({ name: "", qty: 1, unit: "", category: "Camp Supplies", store: "Unassigned" });
@@ -1827,13 +1897,12 @@ function FoodView({ destinations, recipes, setRecipes, selectedMeals, setSelecte
     if (!mealForm.name.trim() || !mealForm.ingredients.length) return;
     const meal = { ...mealForm, id: mealForm.id || uid("meal"), name: mealForm.name.trim(), night: Number(mealForm.night) || 1 };
     setRecipes((prev) => (mealForm.id ? prev.map((m) => (m.id === meal.id ? meal : m)) : [...prev, meal]));
-    setSelectedMeals((prev) => (prev.includes(meal.id) ? prev : [...prev, meal.id]));
     setMealForm({ name: "", type: "Dinner", destinationId: destinations[0]?.id || "", night: 1, ingredients: [] });
     setEditingMealId(null);
   };
 
   const startEdit = (meal) => { setMealForm(clone(meal)); setEditingMealId(meal.id); };
-  const deleteMeal = (mealId) => { setRecipes((prev) => prev.filter((m) => m.id !== mealId)); setSelectedMeals((prev) => prev.filter((id) => id !== mealId)); };
+  const deleteMeal = (mealId) => { setRecipes((prev) => prev.filter((m) => m.id !== mealId)); };
   const addManual = () => {
     if (!manualItem.name.trim()) return;
     setManualShoppingItems((prev) => [...prev, { ...manualItem, id: uid("manual"), name: manualItem.name.trim(), qty: Number(manualItem.qty) || 1, sources: ["Manual"] }]);
@@ -1944,11 +2013,11 @@ function FoodView({ destinations, recipes, setRecipes, selectedMeals, setSelecte
               <h3 className="mb-2 font-bold">Store: {store}</h3>
               <div className="space-y-2">
                 {filteredShopping.filter((i) => (i.store || "Unassigned") === store).map((item) => {
-                  const key = `${item.name}-${item.unit}-${item.category}-${item.store}`;
+                  const key = item.checkKey || item.key || `${item.name}-${item.unit}-${item.category || "Other"}-${item.store || "Unassigned"}`;
                   return (
                     <div key={key} className="rounded-2xl border border-slate-200 bg-white p-3">
                       <div className="grid gap-2 sm:grid-cols-[auto_1fr_180px_auto]">
-                        <button type="button" onClick={() => setShoppingChecks((prev) => ({ ...prev, [key]: !prev[key] }))}>{shoppingChecks[key] ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
+                        <button type="button" onClick={() => toggleShoppingStatus(key)}>{shoppingChecks[key] ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
                         <div>
                           <div className={shoppingChecks[key] ? "line-through text-slate-500" : ""}>{item.qty} {item.unit} {item.name}</div>
                           <div className="text-xs text-slate-500">{item.category} • From: {item.sources.join(", ")}</div>
