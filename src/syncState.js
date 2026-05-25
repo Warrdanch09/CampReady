@@ -152,7 +152,18 @@ function mergeObject(local, cloud, path, localMeta, cloudMeta) {
 
     const localTime = Number(localFields[key]) || Number(local[UPDATED_AT_KEY]) || getRootTime(localMeta);
     const cloudTime = Number(cloudFields[key]) || Number(cloud[UPDATED_AT_KEY]) || getRootTime(cloudMeta);
-    if (localTime >= cloudTime) {
+
+    // Data-loss guard: after app/schema upgrades, freshly-created fallback
+    // objects can contain newer blank defaults. Do not let those blanks erase
+    // existing meaningful values from another device/cloud snapshot. Explicit
+    // deletes are handled separately by tombstones in array metadata.
+    if (isBlankValue(localValue) && hasMeaningfulValue(cloudValue)) {
+      result[key] = cloudValue;
+      mergedFields[key] = cloudTime || localTime;
+    } else if (isBlankValue(cloudValue) && hasMeaningfulValue(localValue)) {
+      result[key] = localValue;
+      mergedFields[key] = localTime || cloudTime;
+    } else if (localTime >= cloudTime) {
       result[key] = localValue;
       mergedFields[key] = localTime;
     } else {
@@ -220,6 +231,15 @@ function mergeArray(localArray, cloudArray, path, localMeta, cloudMeta) {
   }
 
   return ordered;
+}
+
+
+function isBlankValue(value) {
+  return value === "" || value === null || value === undefined;
+}
+
+function hasMeaningfulValue(value) {
+  return !isBlankValue(value);
 }
 
 function mergeSyncMeta(a = {}, b = {}) {
