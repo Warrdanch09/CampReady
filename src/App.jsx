@@ -494,15 +494,11 @@ async function loadAndMergeUserState(userId) {
       : cloudData || localState || null;
 
     if (merged) {
+      // Initial hydration is intentionally read-only against Supabase.
+      // Never write during login/session restore, because an empty or stale
+      // local snapshot can otherwise replace valid cloud data before the app
+      // has finished hydrating. Normal user edits will push after hydration.
       saveState(merged);
-      // Do not let the initial app boot depend forever on this write. The local
-      // save is enough to render; normal sync will retry if this upsert fails.
-      await withTimeout(
-        supabase
-          .from("user_data")
-          .upsert({ id: userId, data: merged }, { onConflict: "id" }),
-        "Initial cloud write"
-      );
     }
 
     return merged;
@@ -515,6 +511,7 @@ async function loadAndMergeUserState(userId) {
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [dataReady, setDataReady] = useState(!hasSupabase);
+  const [cloudHydrated, setCloudHydrated] = useState(!hasSupabase);
   const [user, setUser] = useState(null);
   const [initialData, setInitialData] = useState(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
@@ -522,10 +519,12 @@ export default function App() {
   const hydrateUser = useCallback(async (nextUser, { blockScreen = true } = {}) => {
     if (!hasSupabase || !nextUser) {
       setInitialData(sanitizeSeedData(loadSavedState()));
+      setCloudHydrated(true);
       setDataReady(true);
       return;
     }
 
+    setCloudHydrated(false);
     if (blockScreen) setDataReady(false);
 
     try {
@@ -537,12 +536,14 @@ export default function App() {
     } finally {
       // Critical mobile fix: never leave the app permanently on Loading CampReady
       // if Supabase/auth stalls while the tab is backgrounded or waking up.
+      setCloudHydrated(true);
       setDataReady(true);
     }
   }, []);
 
   useEffect(() => {
     if (!hasSupabase) {
+      setCloudHydrated(true);
       setAuthReady(true);
       setDataReady(true);
       return;
@@ -563,13 +564,17 @@ export default function App() {
 
         if (session?.user) {
           setUser(session.user);
+          setCloudHydrated(false);
           // Local-first: render immediately, then hydrate/sync in the background.
           hydrateUser(session.user, { blockScreen: false });
+        } else {
+          setCloudHydrated(true);
         }
       } catch (error) {
         console.warn("Auth boot failed or timed out, falling back to signed-out/local mode:", error);
         if (!mounted) return;
         setUser(null);
+        setCloudHydrated(true);
         setInitialData(sanitizeSeedData(loadSavedState()));
         setDataReady(true);
       } finally {
@@ -584,6 +589,7 @@ export default function App() {
 
       if (event === "SIGNED_OUT") {
         setUser(null);
+        setCloudHydrated(true);
         setInitialData(null);
         setPasswordRecovery(false);
         setDataReady(true);
@@ -609,6 +615,7 @@ export default function App() {
 
       if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
         setUser(session.user);
+        setCloudHydrated(false);
         setInitialData(sanitizeSeedData(loadSavedState()));
         setDataReady(true);
         setAuthReady(true);
@@ -630,6 +637,7 @@ export default function App() {
 
   const handleAuth = async (nextUser) => {
     setUser(nextUser);
+    setCloudHydrated(false);
     setInitialData(sanitizeSeedData(loadSavedState()));
     setDataReady(true);
     setAuthReady(true);
@@ -644,7 +652,7 @@ export default function App() {
   }
 
   if (hasSupabase && !user) return <AuthScreen onAuth={handleAuth} />;
-  return <CampReadyApp user={user} initialData={initialData} onSignOut={handleSignOut} />;
+  return <CampReadyApp user={user} initialData={initialData} cloudHydrated={cloudHydrated} onSignOut={handleSignOut} />;
 }
 
 function LoadingScreen() {
@@ -732,7 +740,7 @@ function ResetPasswordScreen({ onComplete, onSignOut }) {
 // Main app
 // -----------------------------------------------------------------------------
 
-function CampReadyApp({ user, initialData, onSignOut }) {
+function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   // Keep raw sync metadata for merging, but strip it before initializing UI state.
   const rawInitialState = useMemo(() => sanitizeSeedData(initialData || loadSavedState()), [initialData]);
   const uiInitialState = useMemo(() => stripSyncMetadata(rawInitialState), [rawInitialState]);
@@ -1169,6 +1177,14 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
     saveState(stateObj);       // always write locally, even offline
     stateRef.current = stateObj;
+
+    if (hasSupabase && user && !cloudHydrated) {
+      // Critical data-loss guard: do not push anything created during login
+      // until the initial cloud record has been read and applied/merged.
+      pendingSyncRef.current = true;
+      setSyncStatus("pending");
+      return;
+    }
 
     if (!isOnlineRef.current) {
       pendingSyncRef.current = true;
