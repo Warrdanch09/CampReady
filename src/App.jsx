@@ -1151,6 +1151,47 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     setActiveTab("trip");
   };
 
+
+  const trashTrip = (id) => {
+    const tripToTrash = trips.find((t) => t.id === id);
+    const tripName = tripToTrash?.name || "this trip";
+    const confirmed = window.confirm(`Move "${tripName}" to the trash? You can restore it from the Trips trash bin.`);
+    if (!confirmed) return;
+
+    const trashedAt = new Date().toISOString();
+    setTrips((prev) => prev.map((t) => (
+      t.id === id
+        ? { ...t, status: "Trash", trashedAt, deletedAt: undefined }
+        : t
+    )));
+
+    if (activeTripId === id) {
+      setActiveTab("home");
+    }
+  };
+
+  const restoreTrip = (id) => {
+    setTrips((prev) => prev.map((t) => (
+      t.id === id
+        ? { ...t, status: "Past", trashedAt: undefined, deletedAt: undefined }
+        : t
+    )));
+  };
+
+  const permanentlyDeleteTrip = (id) => {
+    const tripToDelete = trips.find((t) => t.id === id);
+    const tripName = tripToDelete?.name || "this trip";
+    const confirmed = window.confirm(`Permanently delete "${tripName}"? This cannot be restored from the trash.`);
+    if (!confirmed) return;
+
+    const deletedAt = new Date().toISOString();
+    setTrips((prev) => prev.map((t) => (
+      t.id === id
+        ? { ...t, status: "Deleted", trashedAt: t.trashedAt || deletedAt, deletedAt }
+        : t
+    )));
+  };
+
   const resetCheckboxesOnly = () => {
     setTasks((prev) => {
       const next = clone(prev);
@@ -1210,7 +1251,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
           </nav>
         )}
 
-        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} deleteTrip={(id) => setTrips((prev) => prev.filter((t) => t.id !== id))} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} />}
+        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} />}
         {activeTab === "template"   && <TemplateEditor appTemplate={appTemplate} setAppTemplate={setAppTemplate} goHome={() => setActiveTab("home")} />}
         {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingChecks} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
@@ -1276,7 +1317,10 @@ function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut }) {
   );
 }
 
-function HomePage({ trips, activeTripId, startTrip, openTrip, deleteTrip, openTemplate, openMaintenance }) {
+function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restoreTrip, permanentlyDeleteTrip, openTemplate, openMaintenance }) {
+  const activeTrips = (trips || []).filter((t) => t.status !== "Trash" && t.status !== "Deleted");
+  const trashedTrips = (trips || []).filter((t) => t.status === "Trash");
+
   return (
     <div className="space-y-4">
       <Card>
@@ -1287,8 +1331,9 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, deleteTrip, openTe
           </div>
           <button type="button" onClick={startTrip} className="shrink-0 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">+ New Trip</button>
         </div>
+
         <div className="grid gap-3 md:grid-cols-2">
-          {trips.map((t) => (
+          {activeTrips.map((t) => (
             <div key={t.id} className={`rounded-3xl border p-4 ${t.id === activeTripId ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white"}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -1296,12 +1341,48 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, deleteTrip, openTe
                   <h3 className="text-lg font-bold">{t.name}</h3>
                   <p className="text-sm text-slate-600">{(t.destinations || []).map((d) => d.name).join(" → ")}</p>
                 </div>
-                <button type="button" onClick={() => deleteTrip(t.id)} className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-100"><Trash2 size={16} /></button>
+                <button
+                  type="button"
+                  onClick={() => trashTrip(t.id)}
+                  className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-100"
+                  title="Move trip to trash"
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
               <button type="button" onClick={() => openTrip(t)} className="mt-4 w-full rounded-2xl bg-slate-900 px-4 py-2 font-semibold text-white">Open trip</button>
             </div>
           ))}
         </div>
+
+        {activeTrips.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+            No active trips. Create a new trip or restore one from the trash.
+          </div>
+        )}
+
+        {trashedTrips.length > 0 && (
+          <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <summary className="cursor-pointer text-sm font-bold text-slate-700">Trash Bin ({trashedTrips.length})</summary>
+            <div className="mt-3 space-y-2">
+              {trashedTrips.map((t) => (
+                <div key={t.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-bold">{t.name}</div>
+                      <div className="text-xs text-slate-500">Moved to trash {t.trashedAt ? new Date(t.trashedAt).toLocaleString() : "recently"}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => restoreTrip(t.id)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Restore</button>
+                      <button type="button" onClick={() => permanentlyDeleteTrip(t.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100">Delete Forever</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
         <div className="mt-4 flex justify-end">
           <button type="button" onClick={openTemplate} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Edit RV Template</button>
         </div>
