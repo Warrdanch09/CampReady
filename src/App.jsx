@@ -997,6 +997,77 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     }
   }, [user, applyMergedState]);
 
+  const getCurrentUiState = useCallback(() => ({
+    activeChecklist,
+    trip,
+    trips,
+    activeTripId,
+    appTemplate,
+    tasks,
+    family,
+    activeMember,
+    recipes,
+    selectedMeals,
+    manualShoppingItems,
+    shoppingChecks,
+    maintenanceItems,
+    rvConfig,
+    towVehicle,
+    rvNotes,
+  }), [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, selectedMeals, manualShoppingItems, shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes]);
+
+  const exportBackup = useCallback(() => {
+    const backup = {
+      app: "CampReady",
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      userEmail: user?.email || null,
+      state: getCurrentUiState(),
+    };
+
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `campready-backup-${dateStamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, [getCurrentUiState, user]);
+
+  const importBackup = useCallback(async (file) => {
+    if (!file) return;
+
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const importedState = parsed?.state || parsed;
+
+    if (!importedState || typeof importedState !== "object") {
+      throw new Error("Backup file did not contain valid CampReady data.");
+    }
+
+    const confirmed = window.confirm(
+      "Import this backup? This will replace the current local CampReady data on this device and then sync the imported data when online."
+    );
+    if (!confirmed) return;
+
+    const cleanImportedState = stripSyncMetadata(importedState);
+    const prepared = prepareStateForSave(stateRef.current, cleanImportedState, clientIdRef.current, Date.now());
+
+    applyMergedState(prepared);
+    pendingSyncRef.current = true;
+
+    if (isOnlineRef.current && hasSupabase && user) {
+      setSyncStatus("pending");
+      await pushToSupabase(prepared);
+      pendingSyncRef.current = false;
+    } else {
+      setSyncStatus("offline");
+    }
+  }, [applyMergedState, pushToSupabase, user]);
+
   // Save to localStorage on every change (immediate, always).
   // Only attempt Supabase write when online; set pendingSync flag when offline
   // so the reconnect handler knows to push when signal returns.
@@ -1146,7 +1217,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
         {activeTab === "packing"    && <PackingView family={family} setFamily={setFamily} activeMember={activeMember} setActiveMember={setActiveMember} />}
         {activeTab === "food"       && <FoodView destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} selectedMeals={selectedMeals} setSelectedMeals={setSelectedMeals} shoppingList={shoppingList} shoppingChecks={shoppingChecks} setShoppingChecks={setShoppingChecks} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
         {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} />}
-        {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} user={user} onSignOut={onSignOut} />}
+        {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
       </div>
     </div>
@@ -2148,9 +2219,28 @@ function TemplateEditor({ appTemplate, setAppTemplate, goHome }) {
   );
 }
 
-function SettingsView({ family, setFamily, resetCheckboxesOnly, rebuildTrip, resetAppData, user, onSignOut }) {
+function SettingsView({ family, setFamily, resetCheckboxesOnly, rebuildTrip, resetAppData, exportBackup, importBackup, user, onSignOut }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("🙂");
+  const [backupMessage, setBackupMessage] = useState("");
+  const fileInputRef = useRef(null);
+
+  const handleImportFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setBackupMessage("");
+    try {
+      await importBackup(file);
+      setBackupMessage("Backup imported. It will sync automatically when online.");
+    } catch (error) {
+      console.error("Backup import failed", error);
+      setBackupMessage(error?.message || "Backup import failed.");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
   const addMember = () => {
     if (!name.trim()) return;
     setFamily((prev) => [...prev, { id: uid("person"), name: name.trim(), emoji, items: packTemplate(3) }]);
@@ -2184,6 +2274,16 @@ function SettingsView({ family, setFamily, resetCheckboxesOnly, rebuildTrip, res
             <button type="button" onClick={rebuildTrip} className="w-full rounded-2xl border bg-white px-4 py-3 font-semibold">Rebuild trip lists from template</button>
             <button type="button" onClick={resetAppData} className="w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 font-semibold text-red-700">Clear saved data / reset app</button>
           </div>
+        </Card>
+        <Card>
+          <h2 className="mb-2 text-xl font-bold">Backup / Export</h2>
+          <p className="mb-4 text-sm text-slate-600">Export a JSON backup of this device's current CampReady data, or import a saved backup file.</p>
+          <div className="space-y-2">
+            <button type="button" onClick={exportBackup} className="w-full rounded-2xl bg-slate-900 px-4 py-3 font-semibold text-white">Export backup JSON</button>
+            <button type="button" onClick={() => fileInputRef.current?.click()} className="w-full rounded-2xl border bg-white px-4 py-3 font-semibold">Import backup JSON</button>
+            <input ref={fileInputRef} type="file" accept="application/json,.json" className="hidden" onChange={handleImportFile} />
+          </div>
+          {backupMessage && <p className="mt-3 text-sm text-slate-600">{backupMessage}</p>}
         </Card>
         <PostTripReview />
         {user && (
