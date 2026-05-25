@@ -101,8 +101,16 @@ function annotateObject(previous, next, path, meta, now) {
       result[key] = annotateValue(previousValue, nextValue, `${path}.${key}`, meta, now);
       if (!deepEqual(stripMeta(previousValue), stripMeta(nextValue))) objectChanged = true;
     } else if (!deepEqual(previousValue, nextValue)) {
-      fields[key] = now;
-      objectChanged = true;
+      // Generated checklist/packing rows start as false/false. Do not treat an
+      // untouched seed false as a real user edit, or a second device can push
+      // blank defaults over checked/N/A state from another device. A false edit
+      // is only meaningful if this device previously knew the field existed.
+      if (isTaskBooleanField(key, previous, next) && previousValue === undefined && nextValue === false) {
+        result[key] = nextValue;
+      } else {
+        fields[key] = now;
+        objectChanged = true;
+      }
     }
   }
 

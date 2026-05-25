@@ -110,6 +110,57 @@ const checklistTemplates = {
 
 const starterDestinations = [{ id: "dest-1", name: "Lake Campground", nights: 3 }];
 
+const emptyTripState = { name: "", departureDate: "", destinations: [] };
+
+function isStarterTripRecord(trip) {
+  return trip?.id === "trip-starter" || trip?.name === "Memorial Weekend Camping";
+}
+
+function hasMeaningfulConfig(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  return Object.entries(obj).some(([key, value]) => {
+    if (["rvType"].includes(key)) return false;
+    return value !== "" && value !== null && value !== undefined;
+  });
+}
+
+function hasMeaningfulTasks(tasks) {
+  if (!tasks || typeof tasks !== "object") return false;
+  return Object.values(tasks).some((section) =>
+    section && typeof section === "object" && Object.values(section).some((group) =>
+      Array.isArray(group) && group.some((task) => task?.done || task?.na)
+    )
+  );
+}
+
+function hasRealUserData(state) {
+  if (!state || typeof state !== "object") return false;
+  const trips = Array.isArray(state.trips) ? state.trips.filter((t) => !isStarterTripRecord(t) && t?.status !== "Deleted") : [];
+  return Boolean(
+    trips.length ||
+    hasMeaningfulConfig(state.rvConfig) ||
+    hasMeaningfulConfig(state.towVehicle) ||
+    hasMeaningfulTasks(state.tasks) ||
+    (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0 && !state.manualShoppingItems.every((i) => i?.id === "drinks")) ||
+    (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => n?.id !== "note-starter" || hasMeaningfulConfig(n)))
+  );
+}
+
+function sanitizeSeedData(state) {
+  if (!state || typeof state !== "object") return state;
+  const next = clone(state);
+  if (Array.isArray(next.trips)) {
+    next.trips = next.trips.filter((trip) => !isStarterTripRecord(trip));
+  }
+  if (!next.trips?.some((trip) => trip.id === next.activeTripId)) {
+    next.activeTripId = next.trips?.[0]?.id || null;
+  }
+  if (isStarterTripRecord(next.trip) || !next.activeTripId) {
+    next.trip = next.trips?.[0] ? { ...clone(next.trips[0]), status: undefined, createdAt: undefined } : clone(emptyTripState);
+  }
+  return hasRealUserData(next) ? next : null;
+}
+
 const defaultMaintenanceItems = [
   { id: "maint-tires", name: "Check tire pressure", category: "Tires", frequencyValue: 1, frequencyUnit: "trips", lastDone: "2026-05-01", notes: "Before each trip" },
   { id: "maint-suspension", name: "Grease suspension", category: "Chassis", frequencyValue: 6, frequencyUnit: "months", lastDone: "2026-03-01", notes: "Check fittings while underneath" },
@@ -423,7 +474,7 @@ function withTimeout(promise, label, ms = SYNC_TIMEOUT_MS) {
 }
 
 async function loadAndMergeUserState(userId) {
-  const localState = loadSavedState();
+  const localState = sanitizeSeedData(loadSavedState());
 
   try {
     const { data, error } = await withTimeout(
@@ -470,7 +521,7 @@ export default function App() {
 
   const hydrateUser = useCallback(async (nextUser, { blockScreen = true } = {}) => {
     if (!hasSupabase || !nextUser) {
-      setInitialData(loadSavedState());
+      setInitialData(sanitizeSeedData(loadSavedState()));
       setDataReady(true);
       return;
     }
@@ -479,10 +530,10 @@ export default function App() {
 
     try {
       const merged = await loadAndMergeUserState(nextUser.id);
-      setInitialData(merged || loadSavedState());
+      setInitialData(sanitizeSeedData(merged) || sanitizeSeedData(loadSavedState()));
     } catch (error) {
       console.warn("Hydration failed, continuing with local data:", error);
-      setInitialData(loadSavedState());
+      setInitialData(sanitizeSeedData(loadSavedState()));
     } finally {
       // Critical mobile fix: never leave the app permanently on Loading CampReady
       // if Supabase/auth stalls while the tab is backgrounded or waking up.
@@ -507,7 +558,7 @@ export default function App() {
         );
         if (!mounted) return;
 
-        setInitialData(loadSavedState());
+        setInitialData(sanitizeSeedData(loadSavedState()));
         setDataReady(true);
 
         if (session?.user) {
@@ -519,7 +570,7 @@ export default function App() {
         console.warn("Auth boot failed or timed out, falling back to signed-out/local mode:", error);
         if (!mounted) return;
         setUser(null);
-        setInitialData(loadSavedState());
+        setInitialData(sanitizeSeedData(loadSavedState()));
         setDataReady(true);
       } finally {
         if (mounted) setAuthReady(true);
@@ -558,7 +609,7 @@ export default function App() {
 
       if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
         setUser(session.user);
-        setInitialData(loadSavedState());
+        setInitialData(sanitizeSeedData(loadSavedState()));
         setDataReady(true);
         setAuthReady(true);
         hydrateUser(session.user, { blockScreen: false });
@@ -579,7 +630,7 @@ export default function App() {
 
   const handleAuth = async (nextUser) => {
     setUser(nextUser);
-    setInitialData(loadSavedState());
+    setInitialData(sanitizeSeedData(loadSavedState()));
     setDataReady(true);
     setAuthReady(true);
     // Do not block login on cloud sync; sync runs in the background.
@@ -683,7 +734,7 @@ function ResetPasswordScreen({ onComplete, onSignOut }) {
 
 function CampReadyApp({ user, initialData, onSignOut }) {
   // Keep raw sync metadata for merging, but strip it before initializing UI state.
-  const rawInitialState = useMemo(() => initialData || loadSavedState(), [initialData]);
+  const rawInitialState = useMemo(() => sanitizeSeedData(initialData || loadSavedState()), [initialData]);
   const uiInitialState = useMemo(() => stripSyncMetadata(rawInitialState), [rawInitialState]);
 
   const getInitial = (key, fallback) => {
@@ -704,11 +755,11 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
-  const [trip, setTrip]                     = useState(() => getInitial("trip", { name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations) }));
-  const [trips, setTrips]                   = useState(() => getInitial("trips", [{ id: "trip-starter", name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]));
-  const [activeTripId, setActiveTripId]     = useState(() => getInitial("activeTripId", "trip-starter"));
+  const [trip, setTrip]                     = useState(() => getInitial("trip", clone(emptyTripState)));
+  const [trips, setTrips]                   = useState(() => getInitial("trips", []));
+  const [activeTripId, setActiveTripId]     = useState(() => getInitial("activeTripId", null));
   const [appTemplate, setAppTemplate]       = useState(() => getInitial("appTemplate", checklistTemplates));
-  const [tasks, setTasks]                   = useState(() => getInitial("tasks", buildTasks(checklistTemplates, starterDestinations)));
+  const [tasks, setTasks]                   = useState(() => getInitial("tasks", buildTasks(checklistTemplates, [])));
   const [family, setFamily]                 = useState(() => getInitial("family", defaultFamily));
   const [activeMember, setActiveMember]     = useState(() => getInitial("activeMember", "kyle"));
   const [recipes, setRecipes]               = useState(() => getInitial("recipes", defaultRecipes));
@@ -1088,6 +1139,10 @@ function CampReadyApp({ user, initialData, onSignOut }) {
       family, activeMember, recipes, selectedMeals, manualShoppingItems,
       shoppingChecks, maintenanceItems, rvConfig, towVehicle, rvNotes,
     };
+    if (!hasRealUserData(rawState) && !hasRealUserData(stateRef.current)) {
+      return;
+    }
+
     const stateObj = prepareStateForSave(stateRef.current, rawState, clientIdRef.current);
 
     saveState(stateObj);       // always write locally, even offline
@@ -1126,7 +1181,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   };
 
   const startTrip = () => {
-    const newTrip = { name: "New Camping Trip", departureDate: "", destinations: [{ id: uid("dest"), name: "Destination TBD", nights: 3 }] };
+    const newTrip = { id: uid("trip"), name: "New Camping Trip", departureDate: "", destinations: [{ id: uid("dest"), name: "Destination TBD", nights: 3 }] };
     saveTripRecord(newTrip);
     setTrip(newTrip);
     setTasks(buildTasks(appTemplate, newTrip.destinations));
@@ -1212,13 +1267,12 @@ function CampReadyApp({ user, initialData, onSignOut }) {
 
   const resetAppData = () => {
     clearSavedState();
-    const defaultTrip = { name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations) };
     setActiveChecklist("prep");
-    setTrip(defaultTrip);
-    setTrips([{ id: "trip-starter", name: "Memorial Weekend Camping", departureDate: "", destinations: clone(starterDestinations), status: "Current", createdAt: "Today" }]);
-    setActiveTripId("trip-starter");
+    setTrip(clone(emptyTripState));
+    setTrips([]);
+    setActiveTripId(null);
     setAppTemplate(checklistTemplates);
-    setTasks(buildTasks(checklistTemplates, starterDestinations));
+    setTasks(buildTasks(checklistTemplates, []));
     setFamily(defaultFamily);
     setActiveMember("kyle");
     setRecipes(defaultRecipes);
