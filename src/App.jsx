@@ -108,12 +108,33 @@ const checklistTemplates = {
   },
 };
 
-const starterDestinations = [{ id: "dest-1", name: "Lake Campground", nights: 3 }];
+const starterDestinations = [];
 
 const emptyTripState = { name: "", departureDate: "", destinations: [] };
 
 function isStarterTripRecord(trip) {
   return trip?.id === "trip-starter" || trip?.name === "Memorial Weekend Camping";
+}
+
+function isLegacySeedFamilyMember(member) {
+  return ["kyle", "adult2", "kid1", "kid2"].includes(member?.id) &&
+    ["Kyle", "Adult 2", "Kid 1", "Kid 2"].includes(member?.name || "");
+}
+
+function isLegacySeedRecipe(recipe) {
+  return ["burgers", "pancakes", "tacos"].includes(recipe?.id);
+}
+
+function isLegacySeedMaintenance(item) {
+  return typeof item?.id === "string" && item.id.startsWith("maint-");
+}
+
+function isLegacySeedShoppingItem(item) {
+  return item?.id === "drinks";
+}
+
+function isLegacySeedNote(note) {
+  return note?.id === "note-starter";
 }
 
 function hasMeaningfulConfig(obj) {
@@ -141,8 +162,8 @@ function hasRealUserData(state) {
     hasMeaningfulConfig(state.rvConfig) ||
     hasMeaningfulConfig(state.towVehicle) ||
     hasMeaningfulTasks(state.tasks) ||
-    (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0 && !state.manualShoppingItems.every((i) => i?.id === "drinks")) ||
-    (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => n?.id !== "note-starter" || hasMeaningfulConfig(n)))
+    (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0) ||
+    (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => hasMeaningfulConfig(n)))
   );
 }
 
@@ -152,6 +173,13 @@ function sanitizeSeedData(state) {
   if (Array.isArray(next.trips)) {
     next.trips = next.trips.filter((trip) => !isStarterTripRecord(trip));
   }
+  if (Array.isArray(next.family)) next.family = next.family.filter((m) => !isLegacySeedFamilyMember(m));
+  if (Array.isArray(next.recipes)) next.recipes = next.recipes.filter((r) => !isLegacySeedRecipe(r));
+  if (Array.isArray(next.selectedMeals)) next.selectedMeals = next.selectedMeals.filter((id) => !["burgers", "pancakes", "tacos"].includes(id));
+  if (Array.isArray(next.manualShoppingItems)) next.manualShoppingItems = next.manualShoppingItems.filter((i) => !isLegacySeedShoppingItem(i));
+  if (Array.isArray(next.maintenanceItems)) next.maintenanceItems = next.maintenanceItems.filter((i) => !isLegacySeedMaintenance(i));
+  if (Array.isArray(next.rvNotes)) next.rvNotes = next.rvNotes.filter((n) => !isLegacySeedNote(n));
+  if (isLegacySeedFamilyMember({ id: next.activeMember, name: next.activeMember === "kyle" ? "Kyle" : "" })) next.activeMember = null;
   if (!next.trips?.some((trip) => trip.id === next.activeTripId)) {
     next.activeTripId = next.trips?.[0]?.id || null;
   }
@@ -161,20 +189,8 @@ function sanitizeSeedData(state) {
   return hasRealUserData(next) ? next : null;
 }
 
-const defaultMaintenanceItems = [
-  { id: "maint-tires", name: "Check tire pressure", category: "Tires", frequencyValue: 1, frequencyUnit: "trips", lastDone: "2026-05-01", notes: "Before each trip" },
-  { id: "maint-suspension", name: "Grease suspension", category: "Chassis", frequencyValue: 6, frequencyUnit: "months", lastDone: "2026-03-01", notes: "Check fittings while underneath" },
-  { id: "maint-roof", name: "Inspect roof seals", category: "RV Exterior", frequencyValue: 3, frequencyUnit: "months", lastDone: "2026-04-15", notes: "Look around vents, seams, and edges" },
-  { id: "maint-brakes", name: "Check trailer brakes", category: "Safety", frequencyValue: 12, frequencyUnit: "months", lastDone: "2025-10-01", notes: "Inspect and test braking" },
-  { id: "maint-wax", name: "Wax RV exterior", category: "RV Exterior", frequencyValue: 6, frequencyUnit: "months", lastDone: "2025-12-01", notes: "Wash first" },
-  { id: "maint-water", name: "Sanitize freshwater system", category: "Plumbing", frequencyValue: 6, frequencyUnit: "months", lastDone: "2026-02-01", notes: "Flush thoroughly" },
-];
-
-const defaultRecipes = [
-  { id: "burgers", name: "Burgers", type: "Dinner", destinationId: "dest-1", night: 1, ingredients: [{ name: "Ground beef", qty: 1, unit: "lb", category: "Meat", store: "Unassigned" },{ name: "Burger buns", qty: 1, unit: "pack", category: "Breads", store: "Unassigned" },{ name: "Cheese slices", qty: 1, unit: "pack", category: "Dairy", store: "Unassigned" },{ name: "Chips", qty: 1, unit: "bag", category: "Snacks", store: "Unassigned" }] },
-  { id: "pancakes", name: "Pancakes", type: "Breakfast", destinationId: "dest-1", night: 1, ingredients: [{ name: "Pancake mix", qty: 1, unit: "box", category: "Pantry", store: "Unassigned" },{ name: "Syrup", qty: 1, unit: "bottle", category: "Pantry", store: "Unassigned" },{ name: "Butter", qty: 1, unit: "pack", category: "Dairy", store: "Unassigned" }] },
-  { id: "tacos", name: "Tacos", type: "Dinner", destinationId: "dest-1", night: 2, ingredients: [{ name: "Ground beef", qty: 1, unit: "lb", category: "Meat", store: "Unassigned" },{ name: "Tortillas", qty: 1, unit: "pack", category: "Breads", store: "Unassigned" },{ name: "Shredded cheese", qty: 1, unit: "bag", category: "Dairy", store: "Unassigned" },{ name: "Lettuce", qty: 1, unit: "head", category: "Produce", store: "Unassigned" },{ name: "Salsa", qty: 1, unit: "jar", category: "Pantry", store: "Unassigned" }] },
-];
+const defaultMaintenanceItems = [];
+const defaultRecipes = [];
 
 function packTemplate(nights) {
   return [
@@ -190,12 +206,7 @@ function packTemplate(nights) {
   ];
 }
 
-const defaultFamily = [
-  { id: "kyle", name: "Kyle", emoji: "👨", items: packTemplate(3) },
-  { id: "adult2", name: "Adult 2", emoji: "👩", items: packTemplate(3) },
-  { id: "kid1", name: "Kid 1", emoji: "🧒", items: packTemplate(3) },
-  { id: "kid2", name: "Kid 2", emoji: "👧", items: packTemplate(3) },
-];
+const defaultFamily = [];
 
 // -----------------------------------------------------------------------------
 // Utility functions
@@ -768,17 +779,17 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [trips, setTrips]                   = useState(() => getInitial("trips", []));
   const [activeTripId, setActiveTripId]     = useState(() => getInitial("activeTripId", null));
   const [appTemplate, setAppTemplate]       = useState(() => getInitial("appTemplate", checklistTemplates));
-  const [tasks, setTasks]                   = useState(() => getInitial("tasks", buildTasks(checklistTemplates, [])));
-  const [family, setFamily]                 = useState(() => getInitial("family", defaultFamily));
-  const [activeMember, setActiveMember]     = useState(() => getInitial("activeMember", "kyle"));
-  const [recipes, setRecipes]               = useState(() => getInitial("recipes", defaultRecipes));
-  const [selectedMeals, setSelectedMeals]   = useState(() => getInitial("selectedMeals", ["burgers", "pancakes", "tacos"]));
-  const [manualShoppingItems, setManualShoppingItems] = useState(() => getInitial("manualShoppingItems", [{ id: "drinks", name: "Drinks", qty: 1, unit: "cooler", category: "Drinks", store: "Unassigned", sources: ["Manual"] }]));
+  const [tasks, setTasks]                   = useState(() => getInitial("tasks", {}));
+  const [family, setFamily]                 = useState(() => getInitial("family", []));
+  const [activeMember, setActiveMember]     = useState(() => getInitial("activeMember", null));
+  const [recipes, setRecipes]               = useState(() => getInitial("recipes", []));
+  const [selectedMeals, setSelectedMeals]   = useState(() => getInitial("selectedMeals", []));
+  const [manualShoppingItems, setManualShoppingItems] = useState(() => getInitial("manualShoppingItems", []));
   const [shoppingChecks, setShoppingChecks] = useState(() => getInitial("shoppingChecks", {}));
-  const [maintenanceItems, setMaintenanceItems] = useState(() => getInitial("maintenanceItems", defaultMaintenanceItems));
+  const [maintenanceItems, setMaintenanceItems] = useState(() => getInitial("maintenanceItems", []));
   const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
   const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
-  const [rvNotes, setRvNotes]               = useState(() => getInitial("rvNotes", [{ id: "note-starter", label: "Awning", brand: "", model: "", serialNumber: "", notes: "" }]));
+  const [rvNotes, setRvNotes]               = useState(() => getInitial("rvNotes", []));
 
   // Checklist sidebar nav
   const checklistNav = useMemo(() => [
@@ -831,13 +842,14 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
           name: trip.name,
           destinations: clone(trip.destinations || []),
           departureDate: trip.departureDate || record.departureDate || "",
+          tasks: clone(tasks || {}),
         };
         if (JSON.stringify(record) !== JSON.stringify(updated)) changed = true;
         return updated;
       });
       return changed ? next : prev;
     });
-  }, [trip, activeTripId]);
+  }, [trip, tasks, activeTripId]);
 
   // ── Online / offline detection ─────────────────────────────────────────────
   // When the device comes back online, push any changes made while offline.
@@ -1219,11 +1231,19 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   };
 
   const startTrip = () => {
-    const newTrip = { id: uid("trip"), name: "New Camping Trip", departureDate: "", destinations: [{ id: uid("dest"), name: "Destination TBD", nights: 3 }] };
+    const destination = { id: uid("dest"), name: "Destination TBD", nights: 3 };
+    const newTripTasks = buildTasks(appTemplate, [destination]);
+    const newTrip = {
+      id: uid("trip"),
+      name: "New Camping Trip",
+      departureDate: "",
+      destinations: [destination],
+      tasks: newTripTasks,
+    };
     saveTripRecord(newTrip);
     setTrip(newTrip);
-    setTasks(buildTasks(appTemplate, newTrip.destinations));
-    setFamily((prev) => prev.map((m) => ({ ...m, items: packTemplate(totalNights(newTrip.destinations)) })));
+    setTasks(newTripTasks);
+    setRecipes([]);
     setSelectedMeals([]);
     setManualShoppingItems([]);
     setShoppingChecks({});
@@ -1235,14 +1255,14 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     const opened = {
       ...clone(record),
       name: record.name,
-      destinations: clone(record.destinations || starterDestinations),
+      destinations: clone(record.destinations || []),
     };
     // These fields belong to the home trip card, not the editable trip plan.
     delete opened.status;
     delete opened.createdAt;
 
     setTrip(opened);
-    setTasks(buildTasks(appTemplate, opened.destinations));
+    setTasks(record.tasks ? clone(record.tasks) : buildTasks(appTemplate, opened.destinations));
     setActiveTripId(record.id);
     setActiveChecklist("prep");
     setActiveTab("trip");
@@ -1310,17 +1330,17 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setTrips([]);
     setActiveTripId(null);
     setAppTemplate(checklistTemplates);
-    setTasks(buildTasks(checklistTemplates, []));
-    setFamily(defaultFamily);
-    setActiveMember("kyle");
-    setRecipes(defaultRecipes);
-    setSelectedMeals(["burgers", "pancakes", "tacos"]);
-    setManualShoppingItems([{ id: "drinks", name: "Drinks", qty: 1, unit: "cooler", category: "Drinks", store: "Unassigned", sources: ["Manual"] }]);
+    setTasks({});
+    setFamily([]);
+    setActiveMember(null);
+    setRecipes([]);
+    setSelectedMeals([]);
+    setManualShoppingItems([]);
     setShoppingChecks({});
-    setMaintenanceItems(defaultMaintenanceItems);
+    setMaintenanceItems([]);
     setRvConfig({ rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" });
     setTowVehicle({ year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" });
-    setRvNotes([{ id: "note-starter", label: "Awning", brand: "", model: "", serialNumber: "", notes: "" }]);
+    setRvNotes([]);
     setActiveTab("home");
   };
 
@@ -1744,12 +1764,12 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
   const member = family.find((m) => m.id === activeMember) || family[0];
 
   const addItem = () => {
-    if (!newItem.trim()) return;
-    setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...m.items, { name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
+    if (!newItem.trim() || !member) return;
+    setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...(m.items || []), { name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
     setNewItem(""); setNewQty(1);
   };
-  const update = (index, updates) => setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: m.items.map((item, i) => i === index ? { ...item, ...updates } : item) } : m));
-  const remove = (index) => setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: m.items.filter((_, i) => i !== index) } : m));
+  const update = (index, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).map((item, i) => i === index ? { ...item, ...updates } : item) } : m));
+  const remove = (index) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).filter((_, i) => i !== index) } : m));
 
   return (
     <Card>
@@ -2419,7 +2439,7 @@ function SettingsView({ family, setFamily, resetCheckboxesOnly, rebuildTrip, res
 
   const addMember = () => {
     if (!name.trim()) return;
-    setFamily((prev) => [...prev, { id: uid("person"), name: name.trim(), emoji, items: packTemplate(3) }]);
+    setFamily((prev) => [...prev, { id: uid("person"), name: name.trim(), emoji, items: [] }]);
     setName(""); setEmoji("🙂");
   };
   return (
