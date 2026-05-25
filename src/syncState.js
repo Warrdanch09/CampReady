@@ -150,8 +150,30 @@ function mergeObject(local, cloud, path, localMeta, cloudMeta) {
       continue;
     }
 
-    const localTime = Number(localFields[key]) || Number(local[UPDATED_AT_KEY]) || getRootTime(localMeta);
-    const cloudTime = Number(cloudFields[key]) || Number(cloud[UPDATED_AT_KEY]) || getRootTime(cloudMeta);
+    const localTime = getFieldTime(local, localFields, key, localMeta);
+    const cloudTime = getFieldTime(cloud, cloudFields, key, cloudMeta);
+
+    // Checklist booleans need true field-level last-write-wins. Do not let a
+    // newer root/object timestamp from another device overwrite an older device's
+    // explicit checkbox/N/A edit. Legacy records with no field metadata still OR
+    // together to avoid losing checked/N/A work during migration.
+    if (isTaskBooleanField(key, local, cloud)) {
+      const hasLocalFieldTime = Number(localFields[key]) || 0;
+      const hasCloudFieldTime = Number(cloudFields[key]) || 0;
+      if (hasLocalFieldTime || hasCloudFieldTime) {
+        if (hasLocalFieldTime >= hasCloudFieldTime) {
+          result[key] = localValue;
+          mergedFields[key] = hasLocalFieldTime;
+        } else {
+          result[key] = cloudValue;
+          mergedFields[key] = hasCloudFieldTime;
+        }
+      } else {
+        result[key] = Boolean(localValue || cloudValue);
+        mergedFields[key] = Math.max(localTime, cloudTime);
+      }
+      continue;
+    }
 
     // Data-loss guard: protect existing values from blank defaults introduced
     // by app/schema upgrades, but still allow an explicit newer user edit that
@@ -233,6 +255,19 @@ function mergeArray(localArray, cloudArray, path, localMeta, cloudMeta) {
   return ordered;
 }
 
+
+function getFieldTime(object, fields, key, meta) {
+  return Number(fields?.[key]) || Number(object?.[UPDATED_AT_KEY]) || getRootTime(meta);
+}
+
+function isTaskBooleanField(key, local, cloud) {
+  if (key !== "done" && key !== "na" && key !== "packed") return false;
+  const source = isPlainObject(local) ? local : cloud;
+  // Checklist rows and packing rows both have a stable display name plus boolean
+  // state. Applying field-level timestamp rules here prevents stale false values
+  // from another device from reverting a newer checked/N/A/packed edit.
+  return isPlainObject(source) && typeof source.name === "string";
+}
 
 function isBlankValue(value) {
   return value === "" || value === null || value === undefined;

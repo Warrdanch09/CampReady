@@ -249,9 +249,12 @@ function buildTasks(template, destinations) {
 
 function buildShoppingList(recipes, selectedMeals, manualItems) {
   const map = new Map();
-  selectedMeals.forEach((mealId) => {
-    const meal = recipes.find((m) => m.id === mealId);
-    meal?.ingredients.forEach((ing) => {
+
+  // CampReady now treats every planned meal as part of the shopping list.
+  // This avoids a separate selectedMeals sync conflict path and matches the
+  // intended workflow: if it is on the meal plan, its ingredients are needed.
+  (recipes || []).forEach((meal) => {
+    meal?.ingredients?.forEach((ing) => {
       const key = `${ing.name}-${ing.unit}-${ing.category || "Other"}-${ing.store || "Unassigned"}`;
       const existing = map.get(key) || { ...ing, category: ing.category || "Other", store: ing.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
       existing.qty += Number(ing.qty) || 1;
@@ -259,6 +262,7 @@ function buildShoppingList(recipes, selectedMeals, manualItems) {
       map.set(key, existing);
     });
   });
+
   manualItems.forEach((item) => {
     const key = `${item.name}-${item.unit}-${item.category || "Other"}-${item.store || "Unassigned"}`;
     const existing = map.get(key) || { ...item, category: item.category || "Other", store: item.store || "Unassigned", qty: 0, sources: [], manualIds: [] };
@@ -1742,12 +1746,11 @@ function FoodView({ destinations, recipes, setRecipes, selectedMeals, setSelecte
                     <div className="mb-1 text-xs font-semibold text-slate-500">Night {night}</div>
                     <div className="space-y-2">
                       {recipes.filter((m) => m.destinationId === dest.id && (Number(m.night) || 1) === night).map((meal) => {
-                        const selected = selectedMeals.includes(meal.id);
                         return (
                           <div key={meal.id} className="flex gap-2">
                             <div className="flex-1">
-                              <CheckRow checked={selected} label={meal.name} sub={`${meal.type} • ${meal.ingredients.length} ingredients${selected ? " • Included in shopping list" : ""}`} strikeOnChecked={false}
-                                onClick={() => setSelectedMeals((prev) => selected ? prev.filter((id) => id !== meal.id) : [...prev, meal.id])} />
+                              <CheckRow checked={true} label={meal.name} sub={`${meal.type} • ${meal.ingredients.length} ingredients • Included in shopping list`} strikeOnChecked={false}
+                                onClick={() => {}} />
                             </div>
                             <button type="button" onClick={() => startEdit(meal)} className="rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold">Edit</button>
                             <button type="button" onClick={() => deleteMeal(meal.id)} className="rounded-2xl border border-slate-200 bg-white p-3"><Trash2 size={16} /></button>
