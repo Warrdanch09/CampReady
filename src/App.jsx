@@ -752,6 +752,7 @@ function CampReadyApp({ user, initialData, onSignOut }) {
   const pendingSyncRef = useRef(false);  // true when localStorage is ahead of cloud
   const suppressPushRef = useRef(false); // true when state just arrived from cloud — prevents push loop
   const clientIdRef = useRef(getClientId());
+  const lastAppliedInitialRef = useRef(null); // tracks late cloud hydration after login/session restore
 
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
@@ -858,6 +859,27 @@ function CampReadyApp({ user, initialData, onSignOut }) {
     if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
     if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
   }, []);
+
+  // Auth can render the app from local/default state before the cloud pull finishes.
+  // When the late cloud hydration arrives, explicitly apply it to the already-mounted app.
+  // Without this, sign out -> sign in can show empty/default state; the next local edit can
+  // then push that empty state back to Supabase.
+  useEffect(() => {
+    if (!rawInitialState || !hasRealUserData(rawInitialState)) return;
+
+    const signature = `${rawInitialState.lastModified || 0}-${rawInitialState?.__sync?.updatedAt || 0}`;
+    if (lastAppliedInitialRef.current === signature) return;
+    lastAppliedInitialRef.current = signature;
+
+    const current = stateRef.current;
+    const merged = current && hasRealUserData(current)
+      ? mergeStates(current, rawInitialState)
+      : rawInitialState;
+
+    if (JSON.stringify(merged) !== JSON.stringify(current)) {
+      applyMergedState(merged);
+    }
+  }, [rawInitialState, applyMergedState]);
 
   useEffect(() => {
     const handleOnline = async () => {
