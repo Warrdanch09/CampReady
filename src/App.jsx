@@ -55,24 +55,40 @@ function normalizeShoppingStatuses(value) {
   return [];
 }
 
+function normalizeFamilyForSync(family = []) {
+  return (family || []).map((member) => ({
+    ...member,
+    id: member.id || uid("member"),
+    items: (member.items || []).map((item) => ({
+      ...item,
+      id: item.id || uid("pack"),
+    })),
+  }));
+}
+
+function normalizeTripForSync(trip) {
+  if (!trip || typeof trip !== "object") return trip;
+  const nextTrip = { ...trip };
+  nextTrip.family = normalizeFamilyForSync(nextTrip.family || []);
+  nextTrip.shoppingStatuses = normalizeShoppingStatuses(nextTrip.shoppingStatuses || nextTrip.shoppingChecks);
+  delete nextTrip.shoppingChecks;
+  delete nextTrip.selectedMeals;
+  delete nextTrip.activeMember; // active family member is local UI state, not shared trip data
+  return nextTrip;
+}
+
 function ensureStableIds(state) {
   if (!state || typeof state !== "object") return state;
   const next = clone(state);
 
-  if (Array.isArray(next.family)) {
-    next.family = next.family.map((member) => ({
-      ...member,
-      id: member.id || uid("member"),
-      items: (member.items || []).map((item) => ({
-        ...item,
-        id: item.id || uid("pack"),
-      })),
-    }));
-  }
+  if (Array.isArray(next.family)) next.family = normalizeFamilyForSync(next.family);
+  if (Array.isArray(next.trips)) next.trips = next.trips.map(normalizeTripForSync);
+  if (next.trip) next.trip = normalizeTripForSync(next.trip);
 
   next.shoppingStatuses = normalizeShoppingStatuses(next.shoppingStatuses || next.shoppingChecks);
   delete next.shoppingChecks;
   delete next.selectedMeals;
+  delete next.activeMember; // keep this device's selected family member local only
 
   return next;
 }
@@ -830,17 +846,17 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const lastAppliedInitialRef = useRef(null); // tracks late cloud hydration after login/session restore
 
   const [activeTab, setActiveTab]           = useState("home");
-  const [activeChecklist, setActiveChecklist] = useState(() => getInitial("activeChecklist", "prep"));
-  const [trip, setTrip]                     = useState(() => getInitial("trip", clone(emptyTripState)));
+  const [activeChecklist, setActiveChecklist] = useState("prep");
+  const [trip, setTrip]                     = useState(() => clone(emptyTripState));
   const [trips, setTrips]                   = useState(() => getInitial("trips", []));
-  const [activeTripId, setActiveTripId]     = useState(() => getInitial("activeTripId", null));
+  const [activeTripId, setActiveTripId]     = useState(null);
   const [appTemplate, setAppTemplate]       = useState(() => getInitial("appTemplate", checklistTemplates));
-  const [tasks, setTasks]                   = useState(() => getInitial("tasks", {}));
-  const [family, setFamily]                 = useState(() => getInitial("family", []));
-  const [activeMember, setActiveMember]     = useState(() => getInitial("activeMember", null));
-  const [recipes, setRecipes]               = useState(() => getInitial("recipes", []));
-  const [manualShoppingItems, setManualShoppingItems] = useState(() => getInitial("manualShoppingItems", []));
-  const [shoppingStatuses, setShoppingStatuses] = useState(() => normalizeShoppingStatuses(getInitial("shoppingStatuses", getInitial("shoppingChecks", []))));
+  const [tasks, setTasks]                   = useState({});
+  const [family, setFamily]                 = useState([]);
+  const [activeMember, setActiveMember]     = useState(null);
+  const [recipes, setRecipes]               = useState([]);
+  const [manualShoppingItems, setManualShoppingItems] = useState([]);
+  const [shoppingStatuses, setShoppingStatuses] = useState([]);
   const [maintenanceItems, setMaintenanceItems] = useState(() => getInitial("maintenanceItems", []));
   const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
   const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
@@ -902,6 +918,42 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     });
   }, []);
 
+  const makeActiveTripRecord = useCallback((record = {}) => ({
+    ...record,
+    id: activeTripId || record.id,
+    name: trip?.name || record.name || "",
+    departureDate: trip?.departureDate || record.departureDate || "",
+    destinations: clone(trip?.destinations || record.destinations || []),
+    tasks: clone(tasks || record.tasks || {}),
+    family: normalizeFamilyForSync(family || record.family || []),
+    recipes: clone(recipes || record.recipes || []),
+    manualShoppingItems: clone(manualShoppingItems || record.manualShoppingItems || []),
+    shoppingStatuses: normalizeShoppingStatuses(shoppingStatuses || record.shoppingStatuses || []),
+  }), [activeTripId, trip, tasks, family, recipes, manualShoppingItems, shoppingStatuses]);
+
+  const loadTripRecordIntoUi = useCallback((record) => {
+    if (!record) return;
+    const opened = {
+      ...clone(record),
+      name: record.name || "",
+      departureDate: record.departureDate || "",
+      destinations: clone(record.destinations || []),
+    };
+    delete opened.status;
+    delete opened.createdAt;
+    delete opened.trashedAt;
+    delete opened.deletedAt;
+
+    setTrip(opened);
+    setTasks(record.tasks ? clone(record.tasks) : buildTasks(appTemplate, opened.destinations));
+    const normalizedFamily = normalizeFamilyForSync(record.family || []);
+    setFamily(clone(normalizedFamily));
+    setActiveMember(normalizedFamily?.[0]?.id || null);
+    setRecipes(clone(record.recipes || []));
+    setManualShoppingItems(clone(record.manualShoppingItems || []));
+    setShoppingStatuses(normalizeShoppingStatuses(record.shoppingStatuses || record.shoppingChecks || []));
+  }, [appTemplate]);
+
   // Keep the active trip card in sync with edits made inside the trip header.
   // Without this, going Home -> Open Trip can reload the older trip snapshot from
   // the Trips list and appear to "lose" recently entered details.
@@ -911,47 +963,42 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       let changed = false;
       const next = prev.map((record) => {
         if (record.id !== activeTripId) return record;
-        const updated = {
-          ...record,
-          name: trip.name,
-          destinations: clone(trip.destinations || []),
-          departureDate: trip.departureDate || record.departureDate || "",
-          tasks: clone(tasks || {}),
-        };
+        const updated = makeActiveTripRecord(record);
         if (JSON.stringify(record) !== JSON.stringify(updated)) changed = true;
         return updated;
       });
       return changed ? next : prev;
     });
-  }, [trip, tasks, activeTripId]);
+  }, [activeTripId, trip, tasks, family, recipes, manualShoppingItems, shoppingStatuses, makeActiveTripRecord]);
 
   // ── Online / offline detection ─────────────────────────────────────────────
   // When the device comes back online, push any changes made while offline.
 
   // Applies a fully-merged state object to all component state setters.
   // Called after a reconnect merge so the UI immediately reflects remote changes.
-  const applyMergedState = useCallback((merged) => {
-    // Save raw sync metadata for future merges, but never apply metadata to UI state.
+  const applyMergedState = useCallback((merged, options = {}) => {
+    // Save raw sync metadata for future merges, but never let another device's
+    // currently-open trip selection hijack this device's screen.
     suppressPushRef.current = true;
     saveState(merged);
     stateRef.current = merged;
     const ui = stripSyncMetadata(merged) || {};
-    if (ui.activeChecklist !== undefined) setActiveChecklist(ui.activeChecklist);
-    if (ui.trip !== undefined) setTrip(ui.trip);
-    if (ui.trips !== undefined) setTrips(ui.trips);
-    if (ui.activeTripId !== undefined) setActiveTripId(ui.activeTripId);
+
     if (ui.appTemplate !== undefined) setAppTemplate(ui.appTemplate);
-    if (ui.tasks !== undefined) setTasks(ui.tasks);
-    if (ui.family !== undefined) setFamily(ui.family);
-    if (ui.activeMember !== undefined) setActiveMember(ui.activeMember);
-    if (ui.recipes !== undefined) setRecipes(ui.recipes);
-    if (ui.manualShoppingItems !== undefined) setManualShoppingItems(ui.manualShoppingItems);
-    if (ui.shoppingStatuses !== undefined || ui.shoppingChecks !== undefined) setShoppingStatuses(normalizeShoppingStatuses(ui.shoppingStatuses || ui.shoppingChecks));
+    if (ui.trips !== undefined) setTrips(ui.trips);
     if (ui.maintenanceItems !== undefined) setMaintenanceItems(ui.maintenanceItems);
     if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
     if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
     if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
-  }, []);
+
+    // Only refresh the open trip UI when explicitly requested. Automatic realtime
+    // merges update the Trips records but do not overwrite fields the user may be
+    // actively typing into on this device.
+    if (options.forceActiveTrip && activeTripId && Array.isArray(ui.trips)) {
+      const activeRecord = ui.trips.find((record) => record.id === activeTripId);
+      if (activeRecord) loadTripRecordIntoUi(activeRecord);
+    }
+  }, [activeTripId, loadTripRecordIntoUi]);
 
   // Auth can render the app from local/default state before the cloud pull finishes.
   // When the late cloud hydration arrives, explicitly apply it to the already-mounted app.
@@ -1077,6 +1124,35 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     return () => { supabase.removeChannel(channel); };
   }, [user, applyMergedState]);
 
+  const refreshFromCloud = useCallback(async ({ forceActiveTrip = true } = {}) => {
+    if (!hasSupabase || !user || !isOnlineRef.current) return;
+    setSyncStatus("pending");
+    try {
+      const { data } = await withTimeout(
+        supabase
+          .from("user_data")
+          .select("data")
+          .eq("id", user.id)
+          .single(),
+        "Manual cloud refresh"
+      );
+
+      const cloudData = data?.data;
+      if (!cloudData) {
+        setSyncStatus("idle");
+        return;
+      }
+
+      const merged = stateRef.current ? mergeStates(stateRef.current, cloudData) : cloudData;
+      applyMergedState(merged, { forceActiveTrip });
+      setSyncStatus("saved");
+      setTimeout(() => setSyncStatus("idle"), 2000);
+    } catch (error) {
+      console.error("Manual refresh failed:", error);
+      setSyncStatus("error");
+    }
+  }, [user, applyMergedState]);
+
   // ── Window focus sync ─────────────────────────────────────────────────────
   // When the user switches back to this tab/window, do a lightweight pull
   // to catch any changes from other devices. Fallback for when real-time
@@ -1168,22 +1244,13 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   }, [user, applyMergedState]);
 
   const getCurrentUiState = useCallback(() => ({
-    activeChecklist,
-    trip,
     trips,
-    activeTripId,
     appTemplate,
-    tasks,
-    family,
-    activeMember,
-    recipes,
-    manualShoppingItems,
-    shoppingStatuses,
     maintenanceItems,
     rvConfig,
     towVehicle,
     rvNotes,
-  }), [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, manualShoppingItems, shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes]);
+  }), [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes]);
 
   const exportBackup = useCallback(() => {
     const backup = {
@@ -1249,9 +1316,12 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     }
 
     const rawState = {
-      activeChecklist, trip, trips, activeTripId, appTemplate, tasks,
-      family, activeMember, recipes, manualShoppingItems,
-      shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes,
+      trips,
+      appTemplate,
+      maintenanceItems,
+      rvConfig,
+      towVehicle,
+      rvNotes,
     };
     if (!hasRealUserData(rawState) && !hasRealUserData(stateRef.current)) {
       return;
@@ -1281,9 +1351,9 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       syncTimerRef.current = setTimeout(async () => {
         await pushToSupabase(stateObj);
         pendingSyncRef.current = false;
-      }, 350);
+      }, 900);
     }
-  }, [activeChecklist, trip, trips, activeTripId, appTemplate, tasks, family, activeMember, recipes, manualShoppingItems, shoppingStatuses, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user]);
+  }, [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user, cloudHydrated]);
 
   // Clean up timer on unmount
   useEffect(() => () => clearTimeout(syncTimerRef.current), []);
@@ -1295,6 +1365,11 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       id: newTrip.id || uid("trip"),
       name: newTrip.name,
       destinations: clone(newTrip.destinations || []),
+      tasks: clone(newTrip.tasks || {}),
+      family: normalizeFamilyForSync(newTrip.family || []),
+      recipes: clone(newTrip.recipes || []),
+      manualShoppingItems: clone(newTrip.manualShoppingItems || []),
+      shoppingStatuses: normalizeShoppingStatuses(newTrip.shoppingStatuses || []),
       status: "Current",
       createdAt: new Date().toLocaleDateString(),
     };
@@ -1311,10 +1386,16 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       departureDate: "",
       destinations: [destination],
       tasks: newTripTasks,
+      family: [],
+      recipes: [],
+      manualShoppingItems: [],
+      shoppingStatuses: [],
     };
     saveTripRecord(newTrip);
     setTrip(newTrip);
     setTasks(newTripTasks);
+    setFamily([]);
+    setActiveMember(null);
     setRecipes([]);
     setManualShoppingItems([]);
     setShoppingStatuses([]);
@@ -1323,18 +1404,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   };
 
   const openTrip = (record) => {
-    const opened = {
-      ...clone(record),
-      name: record.name,
-      destinations: clone(record.destinations || []),
-    };
-    // These fields belong to the home trip card, not the editable trip plan.
-    delete opened.status;
-    delete opened.createdAt;
-
-    setTrip(opened);
-    setTasks(record.tasks ? clone(record.tasks) : buildTasks(appTemplate, opened.destinations));
     setActiveTripId(record.id);
+    loadTripRecordIntoUi(record);
     setActiveChecklist("prep");
     setActiveTab("trip");
   };
@@ -1420,11 +1491,11 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       <div className="mx-auto max-w-6xl space-y-4">
 
         {activeTab === "home" ? (
-          <HomeHeader syncStatus={syncStatus} user={user} onSignOut={onSignOut} />
+          <HomeHeader syncStatus={syncStatus} user={user} onSignOut={onSignOut} onRefresh={refreshFromCloud} />
         ) : activeTab === "maintenance" ? (
-          <MaintenanceHeader setActiveTab={setActiveTab} syncStatus={syncStatus} user={user} onSignOut={onSignOut} />
+          <MaintenanceHeader setActiveTab={setActiveTab} syncStatus={syncStatus} user={user} onSignOut={onSignOut} onRefresh={refreshFromCloud} />
         ) : activeTab === "template" ? null : (
-          <TripHeader trip={trip} setTrip={setTrip} stats={stats} setActiveTab={setActiveTab} syncStatus={syncStatus} />
+          <TripHeader trip={trip} setTrip={setTrip} stats={stats} setActiveTab={setActiveTab} syncStatus={syncStatus} onRefresh={refreshFromCloud} />
         )}
 
         {activeTab !== "home" && activeTab !== "template" && activeTab !== "maintenance" && (
@@ -1437,7 +1508,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
           </nav>
         )}
 
-        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} />}
+        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} onRefresh={refreshFromCloud} />}
         {activeTab === "template"   && <TemplateEditor appTemplate={appTemplate} setAppTemplate={setAppTemplate} goHome={() => setActiveTab("home")} />}
         {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
@@ -1455,13 +1526,18 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
 // Home / headers
 // -----------------------------------------------------------------------------
 
-function HomeHeader({ syncStatus, user, onSignOut }) {
+function HomeHeader({ syncStatus, user, onSignOut, onRefresh }) {
   return (
     <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-medium text-slate-500">CampReady</div>
         <div className="flex items-center gap-3">
           <SyncBadge status={syncStatus} />
+          {onRefresh && (
+            <button type="button" onClick={() => onRefresh()} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              Refresh
+            </button>
+          )}
           {user && (
             <div className="flex items-center gap-2">
               <span className="hidden text-xs text-slate-400 sm:block">{user.email}</span>
@@ -1482,13 +1558,18 @@ function HomeHeader({ syncStatus, user, onSignOut }) {
   );
 }
 
-function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut }) {
+function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut, onRefresh }) {
   return (
     <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <button type="button" onClick={() => setActiveTab("home")} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-100">← Back to Home</button>
         <div className="flex items-center gap-3">
           <SyncBadge status={syncStatus} />
+          {onRefresh && (
+            <button type="button" onClick={() => onRefresh()} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              Refresh
+            </button>
+          )}
           {user && (
             <button type="button" onClick={onSignOut} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
               Sign out
@@ -1503,7 +1584,7 @@ function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut }) {
   );
 }
 
-function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restoreTrip, permanentlyDeleteTrip, openTemplate, openMaintenance }) {
+function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restoreTrip, permanentlyDeleteTrip, openTemplate, openMaintenance, onRefresh }) {
   const activeTrips = (trips || []).filter((t) => t.status !== "Trash" && t.status !== "Deleted");
   const trashedTrips = (trips || []).filter((t) => t.status === "Trash");
 
@@ -1515,7 +1596,10 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restore
             <h2 className="text-xl font-bold">Trips</h2>
             <p className="text-sm text-slate-600">Current and previous camping trips.</p>
           </div>
-          <button type="button" onClick={startTrip} className="shrink-0 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">+ New Trip</button>
+          <div className="flex shrink-0 gap-2">
+            {onRefresh && <button type="button" onClick={() => onRefresh({ forceActiveTrip: false })} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Refresh</button>}
+            <button type="button" onClick={startTrip} className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">+ New Trip</button>
+          </div>
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">
@@ -1584,7 +1668,7 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restore
   );
 }
 
-function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus }) {
+function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus, onRefresh }) {
   const dateRanges = useMemo(
     () => buildDestinationDateRanges(trip.departureDate, trip.destinations),
     [trip.departureDate, trip.destinations]
@@ -1638,6 +1722,11 @@ function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus }) {
         </button>
         <div className="flex items-center gap-3">
           <SyncBadge status={syncStatus} />
+          {onRefresh && (
+            <button type="button" onClick={() => onRefresh()} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+              Refresh
+            </button>
+          )}
           <div className="text-xs font-semibold text-slate-500">Active Trip</div>
         </div>
       </div>
@@ -1838,8 +1927,8 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
     setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...(m.items || []), { id: uid("pack"), name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
     setNewItem(""); setNewQty(1);
   };
-  const update = (index, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).map((item, i) => i === index ? { ...item, ...updates } : item) } : m));
-  const remove = (index) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).filter((_, i) => i !== index) } : m));
+  const update = (itemId, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).map((item) => item.id === itemId ? { ...item, ...updates } : item) } : m));
+  const remove = (itemId) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).filter((item) => item.id !== itemId) } : m));
 
   return (
     <Card>
@@ -1857,10 +1946,10 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
         {member?.items.map((item, index) => (
           <div key={item.id || `${item.name}-${index}`} className={`rounded-2xl border p-3 ${item.packed ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}>
             <div className="grid gap-2 sm:grid-cols-[auto_80px_1fr_auto]">
-              <button type="button" onClick={() => update(index, { packed: !item.packed })}>{item.packed ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
-              <input className="rounded-xl border px-3 py-2 text-center" type="number" min="1" value={item.qty ?? ""} onChange={(e) => update(index, { qty: e.target.value })} />
-              <input className={`rounded-xl border px-3 py-2 ${item.packed ? "text-slate-500 line-through" : ""}`} value={item.name} onChange={(e) => update(index, { name: e.target.value })} />
-              <button type="button" onClick={() => remove(index)} className="rounded-xl border border-slate-200 p-2"><Trash2 size={16} /></button>
+              <button type="button" onClick={() => update(item.id, { packed: !item.packed })}>{item.packed ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
+              <input className="rounded-xl border px-3 py-2 text-center" type="number" min="1" value={item.qty ?? ""} onChange={(e) => update(item.id, { qty: e.target.value })} />
+              <input className={`rounded-xl border px-3 py-2 ${item.packed ? "text-slate-500 line-through" : ""}`} value={item.name} onChange={(e) => update(item.id, { name: e.target.value })} />
+              <button type="button" onClick={() => remove(item.id)} className="rounded-xl border border-slate-200 p-2"><Trash2 size={16} /></button>
             </div>
           </div>
         ))}
