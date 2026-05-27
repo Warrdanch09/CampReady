@@ -1584,7 +1584,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         ) : activeTab === "maintenance" ? (
           <MaintenanceHeader setActiveTab={setActiveTab} syncStatus={syncStatus} user={user} onSignOut={onSignOut} onRefresh={refreshFromCloud} />
         ) : activeTab === "template" ? null : (
-          <TripHeader trip={trip} setTrip={setTrip} stats={stats} setActiveTab={setActiveTab} syncStatus={syncStatus} onRefresh={refreshFromCloud} />
+          <TripHeader trip={trip} setTrip={setTrip} setTasks={setTasks} appTemplate={appTemplate} stats={stats} setActiveTab={setActiveTab} syncStatus={syncStatus} onRefresh={refreshFromCloud} />
         )}
 
         {activeTab !== "home" && activeTab !== "template" && activeTab !== "maintenance" && (
@@ -1757,7 +1757,7 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restore
   );
 }
 
-function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus, onRefresh }) {
+function TripHeader({ trip, setTrip, setTasks, appTemplate, stats, setActiveTab, syncStatus, onRefresh }) {
   const dateRanges = useMemo(
     () => buildDestinationDateRanges(trip.departureDate, trip.destinations),
     [trip.departureDate, trip.destinations]
@@ -1782,21 +1782,50 @@ function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus, onRefresh 
   };
 
   const addDestination = () => {
+    const destination = { id: uid("dest"), name: "Destination TBD", nights: 1 };
+
     setTrip((prev) => ({
       ...prev,
-      destinations: [
-        ...prev.destinations,
-        { id: uid("dest"), name: `Destination ${prev.destinations.length + 1}`, nights: 1 },
-      ],
+      destinations: [...prev.destinations, destination],
+    }));
+
+    setTasks?.((prev) => ({
+      ...prev,
+      [`${destination.id}-campSetup`]: buildSection(appTemplate, "campSetup", `${destination.id}-campSetup`),
+      [`${destination.id}-leaveCamp`]: buildSection(appTemplate, "leaveCamp", `${destination.id}-leaveCamp`),
     }));
   };
 
   const removeDestination = (id) => {
-    setTrip((prev) =>
-      prev.destinations.length === 1
-        ? prev
-        : { ...prev, destinations: prev.destinations.filter((d) => d.id !== id) }
-    );
+    setTrip((prev) => {
+      if (prev.destinations.length === 1) return prev;
+      return { ...prev, destinations: prev.destinations.filter((d) => d.id !== id) };
+    });
+
+    setTasks?.((prev) => {
+      const next = { ...(prev || {}) };
+      delete next[`${id}-campSetup`];
+      delete next[`${id}-leaveCamp`];
+      return next;
+    });
+  };
+
+  const moveDestination = (id, direction) => {
+    setTrip((prev) => {
+      const fromIndex = prev.destinations.findIndex((d) => d.id === id);
+      if (fromIndex < 0) return prev;
+
+      const toIndex = fromIndex + direction;
+      if (toIndex < 0 || toIndex >= prev.destinations.length) return prev;
+
+      const destinations = [...prev.destinations];
+      const [moved] = destinations.splice(fromIndex, 1);
+      destinations.splice(toIndex, 0, moved);
+
+      // Preserve destination ids so meals, stop-specific checklists, and other
+      // trip-linked data stay attached to the correct stop after reordering.
+      return { ...prev, destinations };
+    });
   };
 
   return (
@@ -1812,7 +1841,11 @@ function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus, onRefresh 
         <div className="flex items-center gap-3">
           <SyncBadge status={syncStatus} />
           {onRefresh && (
-            <button type="button" onClick={() => onRefresh()} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+            <button
+              type="button"
+              onClick={() => onRefresh()}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            >
               Refresh
             </button>
           )}
@@ -1840,46 +1873,81 @@ function TripHeader({ trip, setTrip, stats, setActiveTab, syncStatus, onRefresh 
             </label>
           </div>
 
-          <div className="mt-3 space-y-2">
-            <div className="text-xs font-semibold text-slate-500">Destinations / Stops</div>
+          <div className="mt-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs font-semibold text-slate-500">Destinations / Stops</div>
+              <button
+                type="button"
+                onClick={addDestination}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                + Add Stop
+              </button>
+            </div>
+
             {trip.destinations.map((dest, index) => (
-              <div key={dest.id} className="grid gap-2 sm:grid-cols-[1fr_110px_auto_auto]">
-                <div>
+              <div key={dest.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-2">
+                {dateRanges[index] && (
+                  <div className="mb-1 px-1 text-xs font-semibold text-slate-500">
+                    {dateRanges[index]}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-[minmax(0,1fr)_72px_auto] items-center gap-2">
                   <input
-                    className="w-full rounded-xl border px-3 py-2"
+                    className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm"
                     value={dest.name}
                     onChange={(e) => updateDestination(dest.id, { name: e.target.value })}
+                    placeholder="Destination"
                   />
-                  {dateRanges[index] && (
-                    <div className="mt-1 text-xs font-medium text-slate-500">
-                      {dateRanges[index]}
-                    </div>
-                  )}
+
+                  <label className="rounded-xl border bg-white px-2 py-1 text-[10px] font-semibold uppercase leading-tight text-slate-500">
+                    Nights
+                    <input
+                      className="mt-0.5 w-full bg-transparent text-center text-sm font-normal text-slate-900 outline-none"
+                      type="number"
+                      min="1"
+                      value={dest.nights ?? ""}
+                      onChange={(e) => updateDestination(dest.id, { nights: e.target.value })}
+                      onBlur={(e) => {
+                        if (e.target.value === "") updateDestination(dest.id, { nights: 1 });
+                      }}
+                    />
+                  </label>
+
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => moveDestination(dest.id, -1)}
+                      disabled={index === 0}
+                      className="h-8 w-8 rounded-lg border bg-white text-sm font-bold disabled:opacity-30"
+                      aria-label="Move stop up"
+                      title="Move stop up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveDestination(dest.id, 1)}
+                      disabled={index === trip.destinations.length - 1}
+                      className="h-8 w-8 rounded-lg border bg-white text-sm font-bold disabled:opacity-30"
+                      aria-label="Move stop down"
+                      title="Move stop down"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeDestination(dest.id)}
+                      disabled={trip.destinations.length === 1}
+                      className="h-8 w-8 rounded-lg border bg-white text-sm font-bold text-red-600 disabled:opacity-30"
+                      aria-label="Delete stop"
+                      title="Delete stop"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
-
-                <label className="rounded-xl border bg-white px-3 py-2 text-sm">
-                  Nights
-                  <input
-                    className="ml-2 w-12 outline-none"
-                    type="number"
-                    min="1"
-                    value={dest.nights ?? ""}
-                    onChange={(e) => updateDestination(dest.id, { nights: e.target.value })}
-                    onBlur={(e) => {
-                      if (e.target.value === "") updateDestination(dest.id, { nights: 1 });
-                    }}
-                  />
-                </label>
-
-                <button type="button" onClick={addDestination} className="rounded-xl border bg-white px-3 py-2 font-bold">+</button>
-                <button
-                  type="button"
-                  onClick={() => removeDestination(dest.id)}
-                  disabled={trip.destinations.length === 1}
-                  className="rounded-xl border bg-white px-3 py-2 font-bold disabled:opacity-40"
-                >
-                  −
-                </button>
               </div>
             ))}
           </div>
