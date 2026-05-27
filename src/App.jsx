@@ -93,6 +93,88 @@ function ensureStableIds(state) {
   return next;
 }
 
+
+function migrateImportedBackupState(importedState) {
+  if (!importedState || typeof importedState !== "object") return null;
+
+  const clean = stripSyncMetadata(importedState);
+  const legacyTrip = clean.trip && typeof clean.trip === "object" ? clean.trip : null;
+  const rootScopedData = {
+    tasks: clean.tasks,
+    family: clean.family,
+    recipes: clean.recipes,
+    manualShoppingItems: clean.manualShoppingItems,
+    shoppingStatuses: clean.shoppingStatuses || clean.shoppingChecks,
+  };
+
+  const hasRootScopedData = Boolean(
+    rootScopedData.tasks ||
+    (Array.isArray(rootScopedData.family) && rootScopedData.family.length) ||
+    (Array.isArray(rootScopedData.recipes) && rootScopedData.recipes.length) ||
+    (Array.isArray(rootScopedData.manualShoppingItems) && rootScopedData.manualShoppingItems.length) ||
+    (rootScopedData.shoppingStatuses && (
+      Array.isArray(rootScopedData.shoppingStatuses)
+        ? rootScopedData.shoppingStatuses.length
+        : Object.keys(rootScopedData.shoppingStatuses).length
+    ))
+  );
+
+  let trips = Array.isArray(clean.trips) ? clone(clean.trips) : [];
+  const targetTripId = clean.activeTripId || legacyTrip?.id || trips[0]?.id || (legacyTrip || hasRootScopedData ? uid("trip") : null);
+
+  if (!trips.length && (legacyTrip || hasRootScopedData)) {
+    trips = [{
+      id: targetTripId,
+      name: legacyTrip?.name || clean.tripName || "Imported Trip",
+      departureDate: legacyTrip?.departureDate || clean.departureDate || "",
+      destinations: clone(legacyTrip?.destinations || clean.destinations || []),
+      status: "Current",
+      createdAt: legacyTrip?.createdAt || new Date().toLocaleDateString(),
+    }];
+  }
+
+  trips = trips.map((trip, index) => {
+    const shouldAttachRootData = hasRootScopedData && (
+      trip.id === targetTripId ||
+      index === 0 ||
+      !trip.tasks ||
+      !trip.family ||
+      !trip.recipes
+    );
+
+    const nextTrip = {
+      ...trip,
+      id: trip.id || (index === 0 && targetTripId ? targetTripId : uid("trip")),
+      name: trip.name || legacyTrip?.name || "Imported Trip",
+      departureDate: trip.departureDate || legacyTrip?.departureDate || "",
+      destinations: clone(trip.destinations || legacyTrip?.destinations || []),
+      tasks: shouldAttachRootData ? clone(trip.tasks || rootScopedData.tasks || {}) : clone(trip.tasks || {}),
+      family: shouldAttachRootData ? normalizeFamilyForSync(trip.family || rootScopedData.family || []) : normalizeFamilyForSync(trip.family || []),
+      recipes: shouldAttachRootData ? clone(trip.recipes || rootScopedData.recipes || []) : clone(trip.recipes || []),
+      manualShoppingItems: shouldAttachRootData ? clone(trip.manualShoppingItems || rootScopedData.manualShoppingItems || []) : clone(trip.manualShoppingItems || []),
+      shoppingStatuses: shouldAttachRootData
+        ? normalizeShoppingStatuses(trip.shoppingStatuses || trip.shoppingChecks || rootScopedData.shoppingStatuses || [])
+        : normalizeShoppingStatuses(trip.shoppingStatuses || trip.shoppingChecks || []),
+    };
+
+    delete nextTrip.shoppingChecks;
+    delete nextTrip.selectedMeals;
+    delete nextTrip.activeMember;
+    return normalizeTripForSync(nextTrip);
+  });
+
+  const migrated = {
+    trips,
+    appTemplate: clean.appTemplate || checklistTemplates,
+    maintenanceItems: Array.isArray(clean.maintenanceItems) ? clone(clean.maintenanceItems) : [],
+    rvConfig: clean.rvConfig || {},
+    towVehicle: clean.towVehicle || {},
+    rvNotes: Array.isArray(clean.rvNotes) ? clone(clean.rvNotes) : [],
+  };
+
+  return ensureStableIds(migrated);
+}
+
 const loadSavedState = () => {
   if (typeof window === "undefined") return null;
   try {
@@ -1289,10 +1371,17 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     );
     if (!confirmed) return;
 
-    const cleanImportedState = stripSyncMetadata(importedState);
-    const prepared = prepareStateForSave(stateRef.current, cleanImportedState, clientIdRef.current, Date.now());
+    const migratedImportedState = migrateImportedBackupState(importedState);
 
-    applyMergedState(prepared);
+    if (!migratedImportedState || !hasRealUserData(migratedImportedState)) {
+      throw new Error("Backup file did not contain importable CampReady data.");
+    }
+
+    // Import is an intentional restore/replace operation, so prepare it as a fresh
+    // local authoritative state rather than merging it into older local defaults.
+    const prepared = prepareStateForSave(null, migratedImportedState, clientIdRef.current, Date.now());
+
+    applyMergedState(prepared, { forceActiveTrip: true });
     pendingSyncRef.current = true;
 
     if (isOnlineRef.current && hasSupabase && user) {
