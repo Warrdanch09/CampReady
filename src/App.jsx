@@ -37,17 +37,26 @@ function normalizeShoppingStatuses(value) {
   if (Array.isArray(value)) {
     return value
       .filter((item) => item && (item.key || item.id))
-      .map((item) => ({
-        id: String(item.id || item.key),
-        key: String(item.key || item.id),
-        checked: Boolean(item.checked),
-      }));
+      .map((item) => {
+        const bought = item.bought ?? item.have ?? item.checked ?? false;
+        const packed = item.packed ?? false;
+        return {
+          id: String(item.id || item.key),
+          key: String(item.key || item.id),
+          bought: Boolean(bought),
+          packed: Boolean(packed),
+          // Keep legacy checked for older code paths/backups, but new UI uses bought + packed.
+          checked: Boolean(bought && packed),
+        };
+      });
   }
 
   if (value && typeof value === "object") {
     return Object.entries(value).map(([key, checked]) => ({
       id: String(key),
       key: String(key),
+      bought: Boolean(checked),
+      packed: false,
       checked: Boolean(checked),
     }));
   }
@@ -201,7 +210,7 @@ const clearSavedState = () => {
 
 const categoryOptions = [
   "Dairy","Meat","Pantry","Produce","Snacks","Breads","Drinks",
-  "Camp Supplies","Cutlery","Cooking Supplies","Paper Goods","Cleaning Supplies","Other",
+  "Camp Supplies","Cutlery","Cooking Supplies","Paper Goods","Cleaning Supplies","Frozen Foods","Condiments","Breakfast","Dessert","Other",
 ];
 
 const maintenanceCategories = [
@@ -316,7 +325,7 @@ function hasRealUserData(state) {
     (Array.isArray(state.family) && state.family.some((m) => !isLegacySeedFamilyMember(m))) ||
     (Array.isArray(state.recipes) && state.recipes.some((r) => !isLegacySeedRecipe(r))) ||
     (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0) ||
-    normalizeShoppingStatuses(state.shoppingStatuses || state.shoppingChecks).some((s) => s.checked) ||
+    normalizeShoppingStatuses(state.shoppingStatuses || state.shoppingChecks).some((s) => s.bought || s.packed || s.checked) ||
     (Array.isArray(state.maintenanceItems) && state.maintenanceItems.some((i) => !isLegacySeedMaintenance(i))) ||
     (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => hasMeaningfulConfig(n)))
   );
@@ -405,6 +414,45 @@ function buildDestinationDateRanges(departureDate, destinations) {
     cursor = end;
     return formatDateRangeLabel(start, end);
   });
+}
+
+function formatDayLabel(date) {
+  if (!date) return "Unscheduled Day";
+  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function buildTripMealDays(departureDate, destinations = []) {
+  const depart = parseDateOnly(departureDate);
+  const safeDestinations = destinations.length ? destinations : [{ id: "unassigned", name: "Destination", nights: 1 }];
+  const days = [];
+  let cursor = depart || parseDateOnly(todayISO());
+
+  safeDestinations.forEach((dest, destIndex) => {
+    const nights = Math.max(1, Number(dest.nights) || 1);
+    for (let dayIndex = 1; dayIndex <= nights; dayIndex += 1) {
+      const date = cursor ? addDays(cursor, dayIndex - 1) : null;
+      const firstDayOfStop = dayIndex === 1;
+      const multiDestination = safeDestinations.length > 1;
+      const previousDest = destIndex === 0 ? null : safeDestinations[destIndex - 1];
+      const routeLabel = destIndex === 0
+        ? `Home → ${dest.name || "Destination"}`
+        : `${previousDest?.name || "Previous Stop"} → ${dest.name || "Destination"}`;
+      days.push({
+        key: `${dest.id}-day-${dayIndex}`,
+        destinationId: dest.id,
+        destinationName: dest.name || "Destination",
+        dayNumber: dayIndex,
+        date,
+        dateKey: date ? date.toISOString().slice(0, 10) : "",
+        label: `${formatDayLabel(date)} — ${firstDayOfStop && multiDestination ? `Travel Day: ${routeLabel}` : (dest.name || "Destination")}`,
+        shortLabel: `${formatDayLabel(date)}${firstDayOfStop && multiDestination ? " • Travel Day" : ""}`,
+        routeLabel: firstDayOfStop && multiDestination ? routeLabel : "",
+      });
+    }
+    if (cursor) cursor = addDays(cursor, nights);
+  });
+
+  return days;
 }
 
 function daysBetween(a, b) { return Math.ceil((b.getTime() - a.getTime()) / 86400000); }
@@ -972,8 +1020,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const sortedMeals = useMemo(() => recipes.slice().sort((a, b) => {
     const ai = trip.destinations.findIndex((d) => d.id === a.destinationId);
     const bi = trip.destinations.findIndex((d) => d.id === b.destinationId);
-    const rank = { Breakfast: 1, Lunch: 2, Dinner: 3, Snack: 4, Drinks: 5 };
-    return (ai - bi) || ((Number(a.night) || 1) - (Number(b.night) || 1)) || ((rank[a.type] || 99) - (rank[b.type] || 99)) || a.name.localeCompare(b.name);
+    const rank = { Breakfast: 1, Lunch: 2, Dinner: 3, Dessert: 4, Snack: 5, Drinks: 6 };
+    return (ai - bi) || ((Number(a.dayNumber ?? a.night) || 1) - (Number(b.dayNumber ?? b.night) || 1)) || ((rank[a.type] || 99) - (rank[b.type] || 99)) || a.name.localeCompare(b.name);
   }), [recipes, trip.destinations]);
 
   const shoppingList = useMemo(
@@ -984,19 +1032,27 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const shoppingStatusMap = useMemo(() => {
     const map = {};
     normalizeShoppingStatuses(shoppingStatuses).forEach((status) => {
-      map[status.key] = Boolean(status.checked);
+      map[status.key] = status;
     });
     return map;
   }, [shoppingStatuses]);
 
-  const toggleShoppingStatus = useCallback((key) => {
+  const toggleShoppingStatus = useCallback((key, field = "bought") => {
     setShoppingStatuses((prev) => {
       const normalized = normalizeShoppingStatuses(prev);
       const exists = normalized.find((item) => item.key === key);
       if (exists) {
-        return normalized.map((item) => item.key === key ? { ...item, checked: !item.checked } : item);
+        return normalized.map((item) => {
+          if (item.key !== key) return item;
+          const nextValue = !Boolean(item[field]);
+          const next = { ...item, [field]: nextValue };
+          next.checked = Boolean(next.bought && next.packed);
+          return next;
+        });
       }
-      return [...normalized, { id: key, key, checked: true }];
+      const next = { id: key, key, bought: false, packed: false, checked: false, [field]: true };
+      next.checked = Boolean(next.bought && next.packed);
+      return [...normalized, next];
     });
   }, []);
 
@@ -1602,7 +1658,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "packing"    && <PackingView family={family} setFamily={setFamily} activeMember={activeMember} setActiveMember={setActiveMember} />}
-        {activeTab === "food"       && <FoodView destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
+        {activeTab === "food"       && <FoodView trip={trip} destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
         {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} />}
         {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
@@ -2119,169 +2175,306 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
 // Food
 // -----------------------------------------------------------------------------
 
-function FoodView({ destinations, recipes, setRecipes, shoppingList, shoppingChecks, toggleShoppingStatus, manualShoppingItems, setManualShoppingItems }) {
-  const [mealForm, setMealForm] = useState({ name: "", type: "Dinner", destinationId: destinations[0]?.id || "", night: 1, ingredients: [] });
+function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shoppingChecks, toggleShoppingStatus, manualShoppingItems, setManualShoppingItems }) {
+  const tripDays = useMemo(() => buildTripMealDays(trip?.departureDate, destinations || []), [trip?.departureDate, destinations]);
+  const firstDay = tripDays[0];
+  const [mealForm, setMealForm] = useState({ name: "", type: "Dinner", dayKey: firstDay?.key || "", destinationId: firstDay?.destinationId || destinations[0]?.id || "", dayNumber: firstDay?.dayNumber || 1, dateKey: firstDay?.dateKey || "", notes: "", ingredients: [] });
   const [ingredient, setIngredient] = useState({ name: "", qty: 1, unit: "pack", category: "Pantry" });
   const [manualItem, setManualItem] = useState({ name: "", qty: 1, unit: "", category: "Camp Supplies", store: "Unassigned" });
   const [editingMealId, setEditingMealId] = useState(null);
   const [storeFilter, setStoreFilter] = useState("All");
   const [categoryFilter, setCategoryFilter] = useState("All");
+  const [openSections, setOpenSections] = useState({ meals: true, addMeal: true, shopping: true });
+  const [openMealDays, setOpenMealDays] = useState({});
+  const [openStores, setOpenStores] = useState({});
+  const [openCategories, setOpenCategories] = useState({});
 
-  const selectedDest = destinations.find((d) => d.id === mealForm.destinationId) || destinations[0];
+  useEffect(() => {
+    if (!mealForm.dayKey && firstDay?.key) {
+      setMealForm((prev) => ({ ...prev, dayKey: firstDay.key, destinationId: firstDay.destinationId, dayNumber: firstDay.dayNumber, dateKey: firstDay.dateKey }));
+    }
+  }, [firstDay?.key]);
+
+  const toggleOpen = (key) => setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  const toggleMealDay = (key) => setOpenMealDays((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+  const toggleStore = (key) => setOpenStores((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+  const toggleCategory = (key) => setOpenCategories((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+
+  const mealTypeRank = { Breakfast: 1, Lunch: 2, Dinner: 3, Dessert: 4, Snack: 5, Drinks: 6 };
+  const mealTypes = ["Breakfast", "Lunch", "Dinner", "Dessert", "Snack", "Drinks"];
+  const selectedDay = tripDays.find((day) => day.key === mealForm.dayKey) || firstDay;
+
   const storeFilters = ["All", ...Array.from(new Set(shoppingList.map((i) => i.store || "Unassigned")))];
   const categoryFilters = ["All", ...Array.from(new Set(shoppingList.map((i) => i.category || "Other")))];
   const filteredShopping = shoppingList.filter((item) => (storeFilter === "All" || item.store === storeFilter) && (categoryFilter === "All" || item.category === categoryFilter));
   const groupedStores = Array.from(new Set(filteredShopping.map((i) => i.store || "Unassigned")));
 
+  const getMealDayKey = (meal) => {
+    if (meal.dayKey) return meal.dayKey;
+    const fallback = tripDays.find((day) => day.destinationId === meal.destinationId && Number(day.dayNumber) === (Number(meal.dayNumber ?? meal.night) || 1));
+    return fallback?.key || `${meal.destinationId || "unassigned"}-day-${Number(meal.dayNumber ?? meal.night) || 1}`;
+  };
+
+  const mealsForDay = (day) => recipes
+    .filter((meal) => getMealDayKey(meal) === day.key)
+    .slice()
+    .sort((a, b) => (mealTypeRank[a.type] || 99) - (mealTypeRank[b.type] || 99) || a.name.localeCompare(b.name));
+
   const addIngredient = () => {
     if (!ingredient.name.trim()) return;
-    setMealForm((prev) => ({ ...prev, ingredients: [...prev.ingredients, { ...ingredient, name: ingredient.name.trim(), qty: Number(ingredient.qty) || 1, store: "Unassigned" }] }));
+    setMealForm((prev) => ({
+      ...prev,
+      ingredients: [...(prev.ingredients || []), { ...ingredient, id: uid("ing"), name: ingredient.name.trim(), qty: Number(ingredient.qty) || 1, store: "Unassigned" }],
+    }));
     setIngredient({ name: "", qty: 1, unit: "pack", category: "Pantry" });
   };
 
-  const saveMeal = () => {
-    if (!mealForm.name.trim() || !mealForm.ingredients.length) return;
-    const meal = { ...mealForm, id: mealForm.id || uid("meal"), name: mealForm.name.trim(), night: Number(mealForm.night) || 1 };
-    setRecipes((prev) => (mealForm.id ? prev.map((m) => (m.id === meal.id ? meal : m)) : [...prev, meal]));
-    setMealForm({ name: "", type: "Dinner", destinationId: destinations[0]?.id || "", night: 1, ingredients: [] });
+  const resetMealForm = () => {
+    const day = tripDays[0];
+    setMealForm({ name: "", type: "Dinner", dayKey: day?.key || "", destinationId: day?.destinationId || destinations[0]?.id || "", dayNumber: day?.dayNumber || 1, dateKey: day?.dateKey || "", notes: "", ingredients: [] });
     setEditingMealId(null);
   };
 
-  const startEdit = (meal) => { setMealForm(clone(meal)); setEditingMealId(meal.id); };
-  const deleteMeal = (mealId) => { setRecipes((prev) => prev.filter((m) => m.id !== mealId)); };
+  const saveMeal = () => {
+    if (!mealForm.name.trim()) return;
+    const day = tripDays.find((item) => item.key === mealForm.dayKey) || selectedDay;
+    const meal = {
+      ...mealForm,
+      id: mealForm.id || uid("meal"),
+      name: mealForm.name.trim(),
+      type: mealForm.type || "Dinner",
+      dayKey: day?.key || mealForm.dayKey || "",
+      destinationId: day?.destinationId || mealForm.destinationId || destinations[0]?.id || "",
+      dayNumber: day?.dayNumber || Number(mealForm.dayNumber ?? mealForm.night) || 1,
+      dateKey: day?.dateKey || mealForm.dateKey || "",
+      notes: mealForm.notes || "",
+      ingredients: mealForm.ingredients || [],
+    };
+    delete meal.night;
+    setRecipes((prev) => (mealForm.id ? prev.map((m) => (m.id === meal.id ? meal : m)) : [...prev, meal]));
+    resetMealForm();
+  };
+
+  const startEdit = (meal) => {
+    const mealDayKey = getMealDayKey(meal);
+    const day = tripDays.find((item) => item.key === mealDayKey);
+    setMealForm({
+      ...clone(meal),
+      dayKey: mealDayKey,
+      destinationId: day?.destinationId || meal.destinationId || destinations[0]?.id || "",
+      dayNumber: day?.dayNumber || Number(meal.dayNumber ?? meal.night) || 1,
+      dateKey: day?.dateKey || meal.dateKey || "",
+      notes: meal.notes || "",
+      ingredients: meal.ingredients || [],
+    });
+    setEditingMealId(meal.id);
+    setOpenSections((prev) => ({ ...prev, addMeal: true }));
+  };
+
+  const deleteMeal = (mealId) => setRecipes((prev) => prev.filter((m) => m.id !== mealId));
+
   const addManual = () => {
     if (!manualItem.name.trim()) return;
     setManualShoppingItems((prev) => [...prev, { ...manualItem, id: uid("manual"), name: manualItem.name.trim(), qty: Number(manualItem.qty) || 1, sources: ["Manual"] }]);
     setManualItem({ name: "", qty: 1, unit: "", category: "Camp Supplies", store: "Unassigned" });
   };
+
   const updateStore = (item, store) => {
-    setRecipes((prev) => prev.map((meal) => ({ ...meal, ingredients: meal.ingredients.map((ing) => ing.name === item.name && ing.unit === item.unit && ing.category === item.category ? { ...ing, store } : ing) })));
-    setManualShoppingItems((prev) => prev.map((m) => (item.manualIds?.includes(m.id) ? { ...m, store } : m)));
+    setRecipes((prev) => prev.map((meal) => ({
+      ...meal,
+      ingredients: (meal.ingredients || []).map((ing) => makeShoppingKey(ing) === item.key ? { ...ing, store } : ing),
+    })));
+    setManualShoppingItems((prev) => prev.map((m) => item.manualIds?.includes(m.id) ? { ...m, store } : m));
   };
+
+  const renderSectionHeader = (key, title, subtitle) => (
+    <button type="button" onClick={() => toggleOpen(key)} className="mb-3 flex w-full items-center justify-between gap-3 text-left">
+      <span>
+        <span className="text-xl font-bold">{openSections[key] ? "▾" : "▸"} {title}</span>
+        {subtitle && <span className="block text-sm font-normal text-slate-500">{subtitle}</span>}
+      </span>
+    </button>
+  );
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <h2 className="mb-4 text-xl font-bold">Meals</h2>
-          <div className="space-y-4">
-            {destinations.map((dest) => (
-              <div key={dest.id}>
-                <h3 className="mb-2 font-bold">{dest.name}</h3>
-                {Array.from({ length: Number(dest.nights) || 1 }, (_, i) => i + 1).map((night) => (
-                  <div key={night} className="mb-3">
-                    <div className="mb-1 text-xs font-semibold text-slate-500">Night {night}</div>
-                    <div className="space-y-2">
-                      {recipes.filter((m) => m.destinationId === dest.id && (Number(m.night) || 1) === night).map((meal) => {
-                        return (
-                          <div key={meal.id} className="flex gap-2">
-                            <div className="flex-1">
-                              <CheckRow checked={true} label={meal.name} sub={`${meal.type} • ${meal.ingredients.length} ingredients • Included in shopping list`} strikeOnChecked={false}
-                                onClick={() => {}} />
-                            </div>
-                            <button type="button" onClick={() => startEdit(meal)} className="rounded-2xl border border-slate-200 bg-white px-3 text-sm font-semibold">Edit</button>
-                            <button type="button" onClick={() => deleteMeal(meal.id)} className="rounded-2xl border border-slate-200 bg-white p-3"><Trash2 size={16} /></button>
-                          </div>
-                        );
-                      })}
+      <Card>
+        {renderSectionHeader("meals", "Meals", "Planned by trip date/day instead of night number.")}
+        {openSections.meals && (
+          <div className="space-y-3">
+            {tripDays.map((day) => {
+              const dayMeals = mealsForDay(day);
+              const isOpen = openMealDays[day.key] ?? true;
+              return (
+                <div key={day.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <button type="button" onClick={() => toggleMealDay(day.key)} className="flex w-full items-start justify-between gap-3 text-left">
+                    <div>
+                      <div className="font-bold">{isOpen ? "▾" : "▸"} {day.label}</div>
+                      {day.routeLabel && <div className="text-xs font-semibold text-slate-500">{day.routeLabel}</div>}
                     </div>
-                  </div>
-                ))}
-              </div>
-            ))}
+                    <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500">{dayMeals.length} meals</div>
+                  </button>
+                  {isOpen && (
+                    <div className="mt-3 space-y-2">
+                      {dayMeals.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 bg-white p-3 text-sm text-slate-500">No meals planned for this day.</div>}
+                      {dayMeals.map((meal) => (
+                        <div key={meal.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-bold">{meal.name}</div>
+                              <div className="text-xs text-slate-500">{meal.type} • {(meal.ingredients || []).length} ingredients</div>
+                              {meal.notes && <div className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-2 text-sm text-slate-600">{meal.notes}</div>}
+                            </div>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => startEdit(meal)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold">Edit</button>
+                              <button type="button" onClick={() => deleteMeal(meal.id)} className="rounded-xl border border-slate-200 bg-white p-2"><Trash2 size={16} /></button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        </Card>
-
-        <Card>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-xl font-bold">{editingMealId ? "Edit Meal" : "Add Meal"}</h2>
-            {editingMealId && (
-              <button type="button" onClick={() => { setEditingMealId(null); setMealForm({ name: "", type: "Dinner", destinationId: destinations[0]?.id || "", night: 1, ingredients: [] }); }} className="rounded-xl border px-3 py-2 text-sm font-semibold">Cancel</button>
-            )}
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Meal Name"><input className="w-full rounded-2xl border px-4 py-2" value={mealForm.name} onChange={(e) => setMealForm({ ...mealForm, name: e.target.value })} /></Field>
-            <Field label="Meal Type">
-              <select className="w-full rounded-2xl border bg-white px-4 py-2" value={mealForm.type} onChange={(e) => setMealForm({ ...mealForm, type: e.target.value })}>
-                {["Breakfast","Lunch","Dinner","Snack","Drinks"].map((x) => <option key={x}>{x}</option>)}
-              </select>
-            </Field>
-            <Field label="Destination">
-              <select className="w-full rounded-2xl border bg-white px-4 py-2" value={mealForm.destinationId} onChange={(e) => setMealForm({ ...mealForm, destinationId: e.target.value, night: 1 })}>
-                {destinations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Night">
-              <input className="w-full rounded-2xl border px-4 py-2 disabled:bg-slate-100" type="number" min="1" max={selectedDest?.nights || 1} disabled={(Number(selectedDest?.nights) || 1) <= 1} value={mealForm.night} onChange={(e) => setMealForm({ ...mealForm, night: e.target.value })} />
-            </Field>
-          </div>
-          <div className="mt-4 space-y-3">
-            <Field label="Ingredient"><input className="w-full rounded-2xl border px-4 py-2" value={ingredient.name} onChange={(e) => setIngredient({ ...ingredient, name: e.target.value })} /></Field>
-            <div className="grid grid-cols-[64px_90px_1fr_auto] gap-3">
-              <Field label="Qty"><input className="w-full rounded-2xl border px-2 py-2 text-center" type="number" min="0" value={ingredient.qty ?? ""} onChange={(e) => setIngredient({ ...ingredient, qty: e.target.value })} /></Field>
-              <Field label="Unit"><input className="w-full rounded-2xl border px-3 py-2" value={ingredient.unit} onChange={(e) => setIngredient({ ...ingredient, unit: e.target.value })} /></Field>
-              <Field label="Category">
-                <select className="w-full rounded-2xl border bg-white px-3 py-2" value={ingredient.category} onChange={(e) => setIngredient({ ...ingredient, category: e.target.value })}>
-                  {categoryOptions.map((cat) => <option key={cat}>{cat}</option>)}
-                </select>
-              </Field>
-              <Field label="Add"><button type="button" onClick={addIngredient} className="rounded-2xl bg-slate-900 px-4 py-2 text-white"><Plus size={18} /></button></Field>
-            </div>
-            {mealForm.ingredients.map((ing, index) => (
-              <div key={`${ing.name}-${index}`} className="flex items-center justify-between rounded-xl bg-slate-100 px-3 py-2 text-sm">
-                <span>{ing.qty} {ing.unit} {ing.name} • {ing.category}</span>
-                <button type="button" onClick={() => setMealForm((prev) => ({ ...prev, ingredients: prev.ingredients.filter((_, i) => i !== index) }))}><Trash2 size={15} /></button>
-              </div>
-            ))}
-            <button type="button" onClick={saveMeal} className="w-full rounded-2xl bg-slate-900 px-4 py-3 font-semibold text-white">{editingMealId ? "Save meal changes" : "Save meal and add to trip"}</button>
-          </div>
-        </Card>
-      </div>
+        )}
+      </Card>
 
       <Card>
-        <h2 className="mb-3 text-xl font-bold">Shopping List</h2>
-        <FilterChips label="Store" values={storeFilters} value={storeFilter} onChange={setStoreFilter} />
-        <FilterChips label="Category" values={categoryFilters} value={categoryFilter} onChange={setCategoryFilter} />
-        <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_80px_90px_150px_auto]">
-          <Field label="Manual Item"><input className="w-full rounded-2xl border px-4 py-2" value={manualItem.name} onChange={(e) => setManualItem({ ...manualItem, name: e.target.value })} /></Field>
-          <Field label="Qty"><input className="w-full rounded-2xl border px-3 py-2" type="number" min="0" value={manualItem.qty ?? ""} onChange={(e) => setManualItem({ ...manualItem, qty: e.target.value })} /></Field>
-          <Field label="Unit"><input className="w-full rounded-2xl border px-3 py-2" value={manualItem.unit} onChange={(e) => setManualItem({ ...manualItem, unit: e.target.value })} /></Field>
-          <Field label="Category">
-            <select className="w-full rounded-2xl border bg-white px-3 py-2" value={manualItem.category} onChange={(e) => setManualItem({ ...manualItem, category: e.target.value })}>
-              {categoryOptions.map((cat) => <option key={cat}>{cat}</option>)}
-            </select>
-          </Field>
-          <Field label="Add"><button type="button" onClick={addManual} className="rounded-2xl bg-slate-900 px-4 py-2 text-white"><Plus size={18} /></button></Field>
-        </div>
-        <div className="space-y-4">
-          {groupedStores.map((store) => (
-            <div key={store}>
-              <h3 className="mb-2 font-bold">Store: {store}</h3>
-              <div className="space-y-2">
-                {filteredShopping.filter((i) => (i.store || "Unassigned") === store).map((item) => {
-                  const key = item.checkKey || item.key || `${item.name}-${item.unit}-${item.category || "Other"}-${item.store || "Unassigned"}`;
-                  return (
-                    <div key={key} className="rounded-2xl border border-slate-200 bg-white p-3">
-                      <div className="grid gap-2 sm:grid-cols-[auto_1fr_180px_auto]">
-                        <button type="button" onClick={() => toggleShoppingStatus(key)}>{shoppingChecks[key] ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
-                        <div>
-                          <div className={shoppingChecks[key] ? "line-through text-slate-500" : ""}>{item.qty} {item.unit} {item.name}</div>
-                          <div className="text-xs text-slate-500">{item.category} • From: {item.sources.join(", ")}</div>
-                        </div>
-                        <select className="rounded-xl border bg-white px-3 py-2" value={item.store || "Unassigned"} onChange={(e) => updateStore(item, e.target.value)}>
-                          {["Unassigned","Walmart","Target","Costco","Sam's Club","Dillons","Amazon","Other"].map((s) => <option key={s}>{s}</option>)}
-                        </select>
-                        {item.sources.includes("Manual") && (
-                          <button type="button" onClick={() => setManualShoppingItems((prev) => prev.filter((x) => !item.manualIds.includes(x.id)))}><Trash2 size={16} /></button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+        {renderSectionHeader("addMeal", editingMealId ? "Edit Meal" : "Add Meal", "Meals can be saved with or without ingredients.")}
+        {openSections.addMeal && (
+          <div className="space-y-4">
+            {editingMealId && <button type="button" onClick={resetMealForm} className="rounded-xl border px-3 py-2 text-sm font-semibold">Cancel edit</button>}
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Meal Name"><input className="w-full rounded-2xl border px-4 py-2" value={mealForm.name} onChange={(e) => setMealForm({ ...mealForm, name: e.target.value })} /></Field>
+              <Field label="Meal Type">
+                <select className="w-full rounded-2xl border bg-white px-4 py-2" value={mealForm.type} onChange={(e) => setMealForm({ ...mealForm, type: e.target.value })}>
+                  {mealTypes.map((x) => <option key={x}>{x}</option>)}
+                </select>
+              </Field>
+              <Field label="Trip Day / Date">
+                <select className="w-full rounded-2xl border bg-white px-4 py-2" value={mealForm.dayKey} onChange={(e) => {
+                  const day = tripDays.find((item) => item.key === e.target.value);
+                  setMealForm({ ...mealForm, dayKey: e.target.value, destinationId: day?.destinationId || "", dayNumber: day?.dayNumber || 1, dateKey: day?.dateKey || "" });
+                }}>
+                  {tripDays.map((day) => <option key={day.key} value={day.key}>{day.label}</option>)}
+                </select>
+              </Field>
+            </div>
+
+            <Field label="Meal Notes / Recipe"><textarea className="min-h-24 w-full rounded-2xl border px-4 py-2" value={mealForm.notes || ""} placeholder="Recipe steps, prep notes, links, cooking instructions..." onChange={(e) => setMealForm({ ...mealForm, notes: e.target.value })} /></Field>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-3 text-sm font-bold">Ingredients</div>
+              <Field label="Ingredient"><input className="w-full rounded-2xl border px-4 py-2" value={ingredient.name} onChange={(e) => setIngredient({ ...ingredient, name: e.target.value })} /></Field>
+              <div className="mt-3 grid grid-cols-[64px_90px_1fr_auto] gap-3">
+                <Field label="Qty"><input className="w-full rounded-2xl border px-2 py-2 text-center" type="number" min="0" value={ingredient.qty ?? ""} onChange={(e) => setIngredient({ ...ingredient, qty: e.target.value })} /></Field>
+                <Field label="Unit"><input className="w-full rounded-2xl border px-3 py-2" value={ingredient.unit} onChange={(e) => setIngredient({ ...ingredient, unit: e.target.value })} /></Field>
+                <Field label="Category">
+                  <select className="w-full rounded-2xl border bg-white px-3 py-2" value={ingredient.category} onChange={(e) => setIngredient({ ...ingredient, category: e.target.value })}>
+                    {categoryOptions.map((cat) => <option key={cat}>{cat}</option>)}
+                  </select>
+                </Field>
+                <Field label="Add"><button type="button" onClick={addIngredient} className="rounded-2xl bg-slate-900 px-4 py-2 text-white"><Plus size={18} /></button></Field>
+              </div>
+              <div className="mt-3 space-y-2">
+                {(mealForm.ingredients || []).map((ing, index) => (
+                  <div key={ing.id || `${ing.name}-${index}`} className="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                    <span>{ing.qty} {ing.unit} {ing.name} • {ing.category}</span>
+                    <button type="button" onClick={() => setMealForm((prev) => ({ ...prev, ingredients: (prev.ingredients || []).filter((_, i) => i !== index) }))}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+                {(!mealForm.ingredients || mealForm.ingredients.length === 0) && <div className="text-xs text-slate-500">No ingredients yet. You can still save this meal and add recipe notes.</div>}
               </div>
             </div>
-          ))}
-        </div>
+            <button type="button" onClick={saveMeal} className="w-full rounded-2xl bg-slate-900 px-4 py-3 font-semibold text-white">{editingMealId ? "Save meal changes" : "Save meal"}</button>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        {renderSectionHeader("shopping", "Shopping List", "Grouped by store and category. Track bought/have separately from packed.")}
+        {openSections.shopping && (
+          <div>
+            <FilterChips label="Store" values={storeFilters} value={storeFilter} onChange={setStoreFilter} />
+            <FilterChips label="Category" values={categoryFilters} value={categoryFilter} onChange={setCategoryFilter} />
+            <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_80px_90px_150px_150px_auto]">
+              <Field label="Manual Item"><input className="w-full rounded-2xl border px-4 py-2" value={manualItem.name} onChange={(e) => setManualItem({ ...manualItem, name: e.target.value })} /></Field>
+              <Field label="Qty"><input className="w-full rounded-2xl border px-3 py-2" type="number" min="0" value={manualItem.qty ?? ""} onChange={(e) => setManualItem({ ...manualItem, qty: e.target.value })} /></Field>
+              <Field label="Unit"><input className="w-full rounded-2xl border px-3 py-2" value={manualItem.unit} onChange={(e) => setManualItem({ ...manualItem, unit: e.target.value })} /></Field>
+              <Field label="Category"><select className="w-full rounded-2xl border bg-white px-3 py-2" value={manualItem.category} onChange={(e) => setManualItem({ ...manualItem, category: e.target.value })}>{categoryOptions.map((cat) => <option key={cat}>{cat}</option>)}</select></Field>
+              <Field label="Store"><select className="w-full rounded-2xl border bg-white px-3 py-2" value={manualItem.store} onChange={(e) => setManualItem({ ...manualItem, store: e.target.value })}>{["Unassigned","Walmart","Target","Costco","Sam's Club","Dillons","Amazon","Other"].map((s) => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="Add"><button type="button" onClick={addManual} className="rounded-2xl bg-slate-900 px-4 py-2 text-white"><Plus size={18} /></button></Field>
+            </div>
+            <div className="space-y-4">
+              {groupedStores.map((store) => {
+                const storeItems = filteredShopping.filter((i) => (i.store || "Unassigned") === store);
+                const storeOpen = openStores[store] ?? true;
+                const categories = Array.from(new Set(storeItems.map((i) => i.category || "Other")));
+                return (
+                  <div key={store} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <button type="button" onClick={() => toggleStore(store)} className="flex w-full items-center justify-between text-left">
+                      <h3 className="font-bold">{storeOpen ? "▾" : "▸"} Store: {store}</h3>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500">{storeItems.length} items</span>
+                    </button>
+                    {storeOpen && (
+                      <div className="mt-3 space-y-3">
+                        {categories.map((category) => {
+                          const categoryKey = `${store}|${category}`;
+                          const categoryOpen = openCategories[categoryKey] ?? true;
+                          const categoryItems = storeItems
+                            .filter((item) => (item.category || "Other") === category)
+                            .slice()
+                            .sort((a, b) => {
+                              const aStatus = shoppingChecks[a.checkKey || a.key] || {};
+                              const bStatus = shoppingChecks[b.checkKey || b.key] || {};
+                              const aDone = Boolean(aStatus.bought || aStatus.checked) && Boolean(aStatus.packed);
+                              const bDone = Boolean(bStatus.bought || bStatus.checked) && Boolean(bStatus.packed);
+                              return Number(aDone) - Number(bDone) || a.name.localeCompare(b.name);
+                            });
+                          return (
+                            <div key={categoryKey} className="rounded-xl border border-slate-200 bg-white p-3">
+                              <button type="button" onClick={() => toggleCategory(categoryKey)} className="flex w-full items-center justify-between text-left">
+                                <div className="text-sm font-bold">{categoryOpen ? "▾" : "▸"} {category}</div>
+                                <div className="text-xs text-slate-500">{categoryItems.length}</div>
+                              </button>
+                              {categoryOpen && (
+                                <div className="mt-2 space-y-2">
+                                  {categoryItems.map((item) => {
+                                    const key = item.checkKey || item.key || makeShoppingKey(item);
+                                    const status = shoppingChecks[key] || {};
+                                    const bought = Boolean(status.bought || status.checked);
+                                    const packed = Boolean(status.packed);
+                                    return (
+                                      <div key={key} className={`rounded-2xl border p-3 ${bought && packed ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}>
+                                        <div className="grid gap-2 sm:grid-cols-[1fr_120px_120px_160px_auto] sm:items-center">
+                                          <div>
+                                            <div className={bought && packed ? "text-slate-500 line-through" : ""}>{item.qty} {item.unit} {item.name}</div>
+                                            <div className="text-xs text-slate-500">From: {(item.sources || []).join(", ")}</div>
+                                          </div>
+                                          <button type="button" onClick={() => toggleShoppingStatus(key, "bought")} className={`rounded-xl border px-3 py-2 text-sm font-semibold ${bought ? "border-green-200 bg-green-100 text-green-800" : "border-slate-200 bg-white"}`}>{bought ? "✓ Bought/Have" : "Bought/Have"}</button>
+                                          <button type="button" onClick={() => toggleShoppingStatus(key, "packed")} className={`rounded-xl border px-3 py-2 text-sm font-semibold ${packed ? "border-green-200 bg-green-100 text-green-800" : "border-slate-200 bg-white"}`}>{packed ? "✓ Packed" : "Packed"}</button>
+                                          <select className="rounded-xl border bg-white px-3 py-2" value={item.store || "Unassigned"} onChange={(e) => updateStore(item, e.target.value)}>{["Unassigned","Walmart","Target","Costco","Sam's Club","Dillons","Amazon","Other"].map((s) => <option key={s}>{s}</option>)}</select>
+                                          {(item.sources || []).includes("Manual") && <button type="button" onClick={() => setManualShoppingItems((prev) => prev.filter((x) => !item.manualIds.includes(x.id)))}><Trash2 size={16} /></button>}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {filteredShopping.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">No shopping items yet.</div>}
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );
