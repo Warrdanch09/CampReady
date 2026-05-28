@@ -447,10 +447,30 @@ function buildTripMealDays(departureDate, destinations = []) {
         label: `${formatDayLabel(date)} — ${firstDayOfStop && multiDestination ? `Travel Day: ${routeLabel}` : (dest.name || "Destination")}`,
         shortLabel: `${formatDayLabel(date)}${firstDayOfStop && multiDestination ? " • Travel Day" : ""}`,
         routeLabel: firstDayOfStop && multiDestination ? routeLabel : "",
+        isTravelDay: firstDayOfStop && multiDestination,
       });
     }
     if (cursor) cursor = addDays(cursor, nights);
   });
+
+  const lastDest = safeDestinations[safeDestinations.length - 1];
+  if (lastDest) {
+    const returnDate = cursor || null;
+    const routeLabel = `${lastDest.name || "Last Destination"} → Home`;
+    days.push({
+      key: `${lastDest.id || "destination"}-return-home`,
+      destinationId: lastDest.id,
+      destinationName: lastDest.name || "Last Destination",
+      dayNumber: Math.max(1, Number(lastDest.nights) || 1) + 1,
+      date: returnDate,
+      dateKey: returnDate ? returnDate.toISOString().slice(0, 10) : "",
+      label: `${formatDayLabel(returnDate)} — Travel Day: ${routeLabel}`,
+      shortLabel: `${formatDayLabel(returnDate)} • Travel Day`,
+      routeLabel,
+      isTravelDay: true,
+      isReturnHomeDay: true,
+    });
+  }
 
   return days;
 }
