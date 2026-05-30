@@ -89,6 +89,24 @@ function normalizeRecipesForSync(recipes = []) {
   });
 }
 
+
+function normalizeCatScaleLogs(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((log) => log && typeof log === "object")
+    .map((log, index) => ({
+      id: log.id || `cat-scale-${stableHash(`${log.date || ""}|${log.reason || ""}|${index}`)}`,
+      rvType: log.rvType || "Travel Trailer",
+      date: log.date || "",
+      reason: log.reason || "",
+      vehicleOnly: { ...(log.vehicleOnly || {}) },
+      hitchedNoWd: { ...(log.hitchedNoWd || {}) },
+      hitchedWd: { ...(log.hitchedWd || {}) },
+      createdAt: log.createdAt || log.updatedAt || "",
+      updatedAt: log.updatedAt || log.createdAt || "",
+    }));
+}
+
 function normalizeFamilyForSync(family = []) {
   return (family || []).map((member) => ({
     ...member,
@@ -123,6 +141,7 @@ function ensureStableIds(state) {
   if (next.trip) next.trip = normalizeTripForSync(next.trip);
 
   next.shoppingStatuses = normalizeShoppingStatuses(next.shoppingStatuses || next.shoppingChecks);
+  next.catScaleLogs = normalizeCatScaleLogs(next.catScaleLogs);
   delete next.shoppingChecks;
   delete next.selectedMeals;
   delete next.activeMember; // keep this device's selected family member local only
@@ -371,7 +390,8 @@ function hasRealUserData(state) {
     (Array.isArray(state.manualShoppingItems) && state.manualShoppingItems.length > 0) ||
     normalizeShoppingStatuses(state.shoppingStatuses || state.shoppingChecks).some((s) => s.bought || s.packed || s.checked) ||
     (Array.isArray(state.maintenanceItems) && state.maintenanceItems.some((i) => !isLegacySeedMaintenance(i))) ||
-    (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => hasMeaningfulConfig(n)))
+    (Array.isArray(state.rvNotes) && state.rvNotes.some((n) => hasMeaningfulConfig(n))) ||
+    (Array.isArray(state.catScaleLogs) && state.catScaleLogs.length > 0)
   );
 }
 
@@ -386,6 +406,7 @@ function sanitizeSeedData(state) {
   if (Array.isArray(next.manualShoppingItems)) next.manualShoppingItems = next.manualShoppingItems.filter((i) => !isLegacySeedShoppingItem(i));
   if (Array.isArray(next.maintenanceItems)) next.maintenanceItems = next.maintenanceItems.filter((i) => !isLegacySeedMaintenance(i));
   if (Array.isArray(next.rvNotes)) next.rvNotes = next.rvNotes.filter((n) => !isLegacySeedNote(n));
+  next.catScaleLogs = normalizeCatScaleLogs(next.catScaleLogs);
   if (isLegacySeedFamilyMember({ id: next.activeMember, name: next.activeMember === "kyle" ? "Kyle" : "" })) next.activeMember = null;
   if (!next.trips?.some((trip) => trip.id === next.activeTripId)) {
     next.activeTripId = next.trips?.[0]?.id || null;
@@ -1057,7 +1078,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
   const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
   const [rvNotes, setRvNotes]               = useState(() => getInitial("rvNotes", []));
-  const [catScaleLogs, setCatScaleLogs]     = useState(() => getInitial("catScaleLogs", []));
+  const [catScaleLogs, setCatScaleLogs]     = useState(() => normalizeCatScaleLogs(getInitial("catScaleLogs", [])));
 
   // Checklist sidebar nav
   const checklistNav = useMemo(() => [
@@ -1197,7 +1218,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
     if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
     if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
-    if (ui.catScaleLogs !== undefined) setCatScaleLogs(ui.catScaleLogs);
+    if (ui.catScaleLogs !== undefined) setCatScaleLogs(normalizeCatScaleLogs(ui.catScaleLogs));
 
     // Only refresh the open trip UI when explicitly requested. Automatic realtime
     // merges update the Trips records but do not overwrite fields the user may be
@@ -1458,7 +1479,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     rvConfig,
     towVehicle,
     rvNotes,
-    catScaleLogs,
+    catScaleLogs: normalizeCatScaleLogs(catScaleLogs),
   }), [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes, catScaleLogs]);
 
   const exportBackup = useCallback(() => {
@@ -1538,7 +1559,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       rvConfig,
       towVehicle,
       rvNotes,
-      catScaleLogs,
+      catScaleLogs: normalizeCatScaleLogs(catScaleLogs),
     };
     if (!hasRealUserData(rawState) && !hasRealUserData(stateRef.current)) {
       return;
@@ -2724,7 +2745,8 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
   const exportWeightData = () => {
     const exportedAt = new Date().toISOString();
     const dateStamp = exportedAt.slice(0, 10);
-    const calculatedCatScaleLogs = (catScaleLogs || []).map((log) => ({
+    const safeCatScaleLogs = normalizeCatScaleLogs(catScaleLogs);
+    const calculatedCatScaleLogs = safeCatScaleLogs.map((log) => ({
       ...log,
       calculatedResults: calculateCatScaleResults(log, rvConfig, towVehicle),
     }));
@@ -2812,7 +2834,7 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
         <CatScaleSection
           rvConfig={rvConfig}
           towVehicle={towVehicle}
-          logs={catScaleLogs}
+          logs={safeCatScaleLogs}
           setLogs={setCatScaleLogs}
         />
 
@@ -2848,7 +2870,8 @@ function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
   const isFifthWheel = rvConfig.rvType === "Fifth Wheel";
   const isTravelTrailer = rvConfig.rvType === "Travel Trailer";
   const supported = isFifthWheel || isTravelTrailer;
-  const sortedLogs = (logs || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const safeLogs = normalizeCatScaleLogs(logs);
+  const sortedLogs = safeLogs.slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   const selectedLog = sortedLogs.find((log) => log.id === selectedId) || sortedLogs[0] || null;
   const selectedResults = selectedLog ? calculateCatScaleResults(selectedLog, rvConfig, towVehicle) : null;
 
@@ -3019,19 +3042,20 @@ function catTripleTotal(entry = {}) {
 }
 
 function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
-  const rvType = log.rvType || rvConfig.rvType || "Travel Trailer";
+  const safeLog = log && typeof log === "object" ? log : emptyCatScaleLog(rvConfig.rvType || "Travel Trailer");
+  const rvType = safeLog.rvType || rvConfig.rvType || "Travel Trailer";
   const isTravelTrailer = rvType === "Travel Trailer";
-  const finalHitched = isTravelTrailer && catTripleTotal(log.hitchedWd) ? log.hitchedWd : log.hitchedNoWd;
-  const vehicleOnlyWeight = catPairTotal(log.vehicleOnly);
-  const noWdTowVehicleWeight = catPairTotal(log.hitchedNoWd);
+  const finalHitched = isTravelTrailer && catTripleTotal(safeLog.hitchedWd) ? safeLog.hitchedWd : safeLog.hitchedNoWd;
+  const vehicleOnlyWeight = catPairTotal(safeLog.vehicleOnly);
+  const noWdTowVehicleWeight = catPairTotal(safeLog.hitchedNoWd);
   const finalTowVehicleWeight = catPairTotal(finalHitched);
   const combinedWeight = catTripleTotal(finalHitched);
   const hitchLoad = Math.max(0, noWdTowVehicleWeight - vehicleOnlyWeight);
   const trailerAxleWeight = catNum(finalHitched?.trailer);
   const estimatedTrailerWeight = trailerAxleWeight + hitchLoad;
 
-  const frontOnly = catNum(log.vehicleOnly?.front);
-  const frontNoWd = catNum(log.hitchedNoWd?.front);
+  const frontOnly = catNum(safeLog.vehicleOnly?.front);
+  const frontNoWd = catNum(safeLog.hitchedNoWd?.front);
   const frontFinal = catNum(finalHitched?.front);
   const frontLostNoWd = Math.max(0, frontOnly - frontNoWd);
   const frontRestored = Math.max(0, frontFinal - frontNoWd);
@@ -3076,7 +3100,7 @@ function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
     hasTrailerGvwr: !!trailerGvwr && !!estimatedTrailerWeight,
     hasTrailerPayload: !!trailerPayload && !!trailerCargo,
     hasTrailerAxleLimit: !!trailerAxleLimit && !!trailerAxleWeight,
-    hasWdAndNoWd: isTravelTrailer && !!catTripleTotal(log.hitchedWd) && !!catTripleTotal(log.hitchedNoWd),
+    hasWdAndNoWd: isTravelTrailer && !!catTripleTotal(safeLog.hitchedWd) && !!catTripleTotal(safeLog.hitchedNoWd),
   };
 }
 
