@@ -1056,6 +1056,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
   const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
   const [rvNotes, setRvNotes]               = useState(() => getInitial("rvNotes", []));
+  const [catScaleLogs, setCatScaleLogs]     = useState(() => getInitial("catScaleLogs", []));
 
   // Checklist sidebar nav
   const checklistNav = useMemo(() => [
@@ -1195,6 +1196,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
     if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
     if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
+    if (ui.catScaleLogs !== undefined) setCatScaleLogs(ui.catScaleLogs);
 
     // Only refresh the open trip UI when explicitly requested. Automatic realtime
     // merges update the Trips records but do not overwrite fields the user may be
@@ -1455,7 +1457,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     rvConfig,
     towVehicle,
     rvNotes,
-  }), [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes]);
+    catScaleLogs,
+  }), [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes, catScaleLogs]);
 
   const exportBackup = useCallback(() => {
     const backup = {
@@ -1534,6 +1537,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       rvConfig,
       towVehicle,
       rvNotes,
+      catScaleLogs,
     };
     if (!hasRealUserData(rawState) && !hasRealUserData(stateRef.current)) {
       return;
@@ -1565,7 +1569,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         pendingSyncRef.current = false;
       }, 900);
     }
-  }, [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes, pushToSupabase, user, cloudHydrated]);
+  }, [trips, appTemplate, maintenanceItems, rvConfig, towVehicle, rvNotes, catScaleLogs, pushToSupabase, user, cloudHydrated]);
 
   // Clean up timer on unmount
   useEffect(() => () => clearTimeout(syncTimerRef.current), []);
@@ -1694,6 +1698,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setRvConfig({ rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" });
     setTowVehicle({ year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" });
     setRvNotes([]);
+    setCatScaleLogs([]);
     setActiveTab("home");
   };
 
@@ -1726,7 +1731,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "packing"    && <PackingView family={family} setFamily={setFamily} activeMember={activeMember} setActiveMember={setActiveMember} />}
         {activeTab === "food"       && <FoodView trip={trip} destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
-        {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} />}
+        {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} catScaleLogs={catScaleLogs} setCatScaleLogs={setCatScaleLogs} />}
         {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
       </div>
@@ -2607,14 +2612,14 @@ function FilterChips({ label, values, value, onChange }) {
 // Maintenance / configuration / weight
 // -----------------------------------------------------------------------------
 
-function MaintenanceView({ maintenanceItems, setMaintenanceItems, rvConfig, setRvConfig, towVehicle, setTowVehicle, rvNotes, setRvNotes }) {
+function MaintenanceView({ maintenanceItems, setMaintenanceItems, rvConfig, setRvConfig, towVehicle, setTowVehicle, rvNotes, setRvNotes, catScaleLogs, setCatScaleLogs }) {
   const [open, setOpen] = useState({ config: true, rvTires: false, rvTanks: false, tow: false, towTires: false, weight: false, weightTow: true, weightTrailer: true, weightCat: false, weightMargins: true, notes: false, addComponent: false, timeline: true, addMaint: false });
   const toggle = (key) => setOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   return (
     <div className="space-y-4">
       <RVConfigSection rvConfig={rvConfig} setRvConfig={setRvConfig} open={open} toggle={toggle} />
       <TowVehicleSection rvConfig={rvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} open={open} toggle={toggle} />
-      <WeightSection rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} open={open} toggle={toggle} />
+      <WeightSection rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} catScaleLogs={catScaleLogs} setCatScaleLogs={setCatScaleLogs} open={open} toggle={toggle} />
       <ComponentNotes rvNotes={rvNotes} setRvNotes={setRvNotes} open={open.notes} addOpen={open.addComponent} toggleNotes={() => toggle("notes")} toggleAdd={() => toggle("addComponent")} />
       <MaintenanceTimeline maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} open={open.timeline} addOpen={open.addMaint} toggleTimeline={() => toggle("timeline")} toggleAdd={() => toggle("addMaint")} />
     </div>
@@ -2692,8 +2697,8 @@ function TowVehicleSection({ rvConfig, towVehicle, setTowVehicle, open, toggle }
   );
 }
 
-function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, open, toggle }) {
-  const towable = ["Travel Trailer","Fifth Wheel","Truck Camper","Other"].includes(rvConfig.rvType);
+function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catScaleLogs = [], setCatScaleLogs, open, toggle }) {
+  const towable = ["Travel Trailer", "Fifth Wheel", "Truck Camper", "Other"].includes(rvConfig.rvType);
   const usesPinWeight = rvConfig.rvType === "Fifth Wheel";
   const hitchLoadName = usesPinWeight ? "Pin Weight" : "Tongue Weight";
   const hitchLoadLower = usesPinWeight ? "pin" : "tongue";
@@ -2730,6 +2735,7 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, open,
             <NumberField label={<HelpLabel label="Hitch Tongue Capacity (lb)" help="Maximum vertical tongue or pin load rating." />} value={towVehicle.hitchTongueRating} onChange={(v) => setTowVehicle({ ...towVehicle, hitchTongueRating: v })} />
           </div>
         </NestedSection>
+
         <NestedSection title="Trailer" open={open.weightTrailer} onToggle={() => toggle("weightTrailer")}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <NumberField label="Trailer GVWR (lb)" value={rvConfig.gvwr} onChange={(v) => setRvConfig({ ...rvConfig, gvwr: v })} />
@@ -2748,6 +2754,14 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, open,
             </div>
           </div>
         </NestedSection>
+
+        <CatScaleSection
+          rvConfig={rvConfig}
+          towVehicle={towVehicle}
+          logs={catScaleLogs}
+          setLogs={setCatScaleLogs}
+        />
+
         <NestedSection title="Margins" open={open.weightMargins} onToggle={() => toggle("weightMargins")}>
           <div className="grid gap-4 lg:grid-cols-2">
             <div>
@@ -2772,6 +2786,233 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, open,
       </div>
     </CollapsibleCard>
   );
+}
+
+function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
+  const [form, setForm] = useState(() => emptyCatScaleLog(rvConfig.rvType));
+  const [selectedId, setSelectedId] = useState(null);
+  const isFifthWheel = rvConfig.rvType === "Fifth Wheel";
+  const isTravelTrailer = rvConfig.rvType === "Travel Trailer";
+  const supported = isFifthWheel || isTravelTrailer;
+  const sortedLogs = (logs || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const selectedLog = sortedLogs.find((log) => log.id === selectedId) || sortedLogs[0] || null;
+  const selectedResults = selectedLog ? calculateCatScaleResults(selectedLog, rvConfig, towVehicle) : null;
+
+  useEffect(() => {
+    setForm((prev) => ({ ...prev, rvType: rvConfig.rvType }));
+  }, [rvConfig.rvType]);
+
+  const updateForm = (path, value) => {
+    setForm((prev) => setNestedValue(prev, path, value));
+  };
+
+  const saveLog = () => {
+    const now = new Date().toISOString();
+    const id = form.id || uid("cat-scale");
+    const nextLog = {
+      ...form,
+      id,
+      rvType: rvConfig.rvType,
+      date: form.date || new Date().toISOString().slice(0, 10),
+      createdAt: form.createdAt || now,
+      updatedAt: now,
+    };
+    setLogs((prev = []) => [nextLog, ...prev.filter((log) => log.id !== id)]);
+    setSelectedId(id);
+    setForm(emptyCatScaleLog(rvConfig.rvType));
+  };
+
+  const editLog = (log) => {
+    setForm(clone(log));
+    setSelectedId(log.id);
+  };
+
+  const deleteLog = (id) => {
+    const confirmed = window.confirm("Delete this CAT Scale log entry?");
+    if (!confirmed) return;
+    setLogs((prev = []) => prev.filter((log) => log.id !== id));
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  return (
+    <NestedSection title="CAT Scale Logs" open={true} onToggle={() => {}}>
+      {!supported && (
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          CAT Scale calculations are currently set up for Travel Trailer and Fifth Wheel RV types. Select one of those RV types to enter weigh-ins.
+        </div>
+      )}
+
+      {supported && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-3">
+            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+              <Field label="Scale Date"><input className="w-full rounded-2xl border px-4 py-2" type="date" value={form.date || ""} onChange={(e) => updateForm("date", e.target.value)} /></Field>
+              <Field label="Trip / Reason"><input className="w-full rounded-2xl border px-4 py-2" value={form.reason || ""} placeholder="Rocky Mountains trip / loaded for camping" onChange={(e) => updateForm("reason", e.target.value)} /></Field>
+            </div>
+
+            <CatWeighInput title="Vehicle Only" values={form.vehicleOnly} onChange={(key, value) => updateForm(`vehicleOnly.${key}`, value)} includeTrailer={false} />
+            <CatWeighInput title={isFifthWheel ? "Vehicle + Fifth Wheel" : "Vehicle + Trailer, No Weight Distribution"} values={form.hitchedNoWd} onChange={(key, value) => updateForm(`hitchedNoWd.${key}`, value)} includeTrailer />
+            {isTravelTrailer && <CatWeighInput title="Vehicle + Trailer, With Weight Distribution" values={form.hitchedWd} onChange={(key, value) => updateForm(`hitchedWd.${key}`, value)} includeTrailer />}
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" onClick={saveLog} className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save CAT Scale Log</button>
+              {form.id && <button type="button" onClick={() => setForm(emptyCatScaleLog(rvConfig.rvType))} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold">Cancel Edit</button>}
+            </div>
+          </div>
+
+          {selectedResults && <CatScaleResults results={selectedResults} rvType={selectedLog.rvType || rvConfig.rvType} />}
+
+          <div className="space-y-2">
+            <div className="text-sm font-bold text-slate-700">Saved Weigh-In Log</div>
+            {!sortedLogs.length && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">No CAT Scale entries saved yet.</div>}
+            {sortedLogs.map((log) => (
+              <div key={log.id} className={`rounded-2xl border p-3 ${selectedLog?.id === log.id ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white"}`}>
+                <button type="button" onClick={() => setSelectedId(log.id)} className="w-full text-left">
+                  <div className="font-bold">{formatDisplayDate(log.date)} • {log.reason || "CAT Scale weigh-in"}</div>
+                  <div className="text-xs text-slate-500">{log.rvType || rvConfig.rvType}</div>
+                </button>
+                <div className="mt-3 flex gap-2">
+                  <button type="button" onClick={() => editLog(log)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold">Edit</button>
+                  <button type="button" onClick={() => deleteLog(log.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </NestedSection>
+  );
+}
+
+function CatWeighInput({ title, values = {}, onChange, includeTrailer }) {
+  return (
+    <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-2 text-sm font-bold text-slate-700">{title}</div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <NumberField label="Front / Steer Axle (lb)" value={values.front || ""} onChange={(v) => onChange("front", v)} />
+        <NumberField label="Drive Axle (lb)" value={values.drive || ""} onChange={(v) => onChange("drive", v)} />
+        {includeTrailer && <NumberField label="Trailer Axle (lb)" value={values.trailer || ""} onChange={(v) => onChange("trailer", v)} />}
+      </div>
+    </div>
+  );
+}
+
+function CatScaleResults({ results, rvType }) {
+  const isTravelTrailer = rvType === "Travel Trailer";
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+      <div className="mb-3 text-sm font-bold text-slate-700">Calculated CAT Scale Results</div>
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+        <MarginCard label="Vehicle-only weight" value={results.vehicleOnlyWeight} active={results.vehicleOnlyWeight > 0} />
+        <MarginCard label="Combined weight" value={results.combinedWeight} active={results.combinedWeight > 0} />
+        <MarginCard label={rvType === "Fifth Wheel" ? "Pin weight" : "Tongue weight"} value={results.hitchLoad} active={results.hitchLoad > 0} />
+        <MarginCard label="Estimated trailer weight" value={results.estimatedTrailerWeight} active={results.estimatedTrailerWeight > 0} />
+        <MarginCard label="Tow vehicle GVWR margin" value={results.towVehicleGvwrMargin} active={results.hasTowVehicleGvwr} />
+        <MarginCard label="Front GAWR margin" value={results.frontGawrMargin} active={results.hasFrontGawr} />
+        <MarginCard label="Rear GAWR margin" value={results.rearGawrMargin} active={results.hasRearGawr} />
+        <MarginCard label="GCWR margin" value={results.gcwrMargin} active={results.hasGcwr} />
+        <MarginCard label="Trailer GVWR margin" value={results.trailerGvwrMargin} active={results.hasTrailerGvwr} />
+        <MarginCard label="Trailer axle margin" value={results.trailerAxleMargin} active={results.hasTrailerAxleLimit} />
+        {isTravelTrailer && <MarginCard label="Front axle restoration" value={results.frontAxleRestoration} active={results.hasWdAndNoWd} />}
+      </div>
+      {isTravelTrailer && results.hasWdAndNoWd && (
+        <p className="mt-3 text-xs text-slate-500">
+          For travel trailers, tongue weight is estimated from the no-weight-distribution weigh-in. Final safety margins use the weight-distribution weigh-in because those are the axle loads used while driving.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function emptyCatScaleLog(rvType = "Travel Trailer") {
+  return {
+    id: "",
+    rvType,
+    date: new Date().toISOString().slice(0, 10),
+    reason: "",
+    vehicleOnly: { front: "", drive: "" },
+    hitchedNoWd: { front: "", drive: "", trailer: "" },
+    hitchedWd: { front: "", drive: "", trailer: "" },
+  };
+}
+
+function setNestedValue(object, path, value) {
+  const parts = path.split(".");
+  const next = clone(object);
+  let cursor = next;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    cursor[parts[i]] = cursor[parts[i]] || {};
+    cursor = cursor[parts[i]];
+  }
+  cursor[parts[parts.length - 1]] = value;
+  return next;
+}
+
+function catNum(value) {
+  return Number(value) || 0;
+}
+
+function catPairTotal(entry = {}) {
+  return catNum(entry.front) + catNum(entry.drive);
+}
+
+function catTripleTotal(entry = {}) {
+  return catPairTotal(entry) + catNum(entry.trailer);
+}
+
+function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
+  const rvType = log.rvType || rvConfig.rvType || "Travel Trailer";
+  const isTravelTrailer = rvType === "Travel Trailer";
+  const finalHitched = isTravelTrailer && catTripleTotal(log.hitchedWd) ? log.hitchedWd : log.hitchedNoWd;
+  const vehicleOnlyWeight = catPairTotal(log.vehicleOnly);
+  const noWdTowVehicleWeight = catPairTotal(log.hitchedNoWd);
+  const finalTowVehicleWeight = catPairTotal(finalHitched);
+  const combinedWeight = catTripleTotal(finalHitched);
+  const hitchLoad = Math.max(0, noWdTowVehicleWeight - vehicleOnlyWeight);
+  const trailerAxleWeight = catNum(finalHitched?.trailer);
+  const estimatedTrailerWeight = trailerAxleWeight + hitchLoad;
+
+  const frontOnly = catNum(log.vehicleOnly?.front);
+  const frontNoWd = catNum(log.hitchedNoWd?.front);
+  const frontFinal = catNum(finalHitched?.front);
+  const frontLostNoWd = Math.max(0, frontOnly - frontNoWd);
+  const frontRestored = Math.max(0, frontFinal - frontNoWd);
+  const frontAxleRestoration = frontLostNoWd ? Math.round((frontRestored / frontLostNoWd) * 100) : 0;
+
+  const towVehicleGvwr = catNum(towVehicle.gvwr);
+  const frontGawr = catNum(towVehicle.frontGawr);
+  const rearGawr = catNum(towVehicle.rearGawr);
+  const gcwr = catNum(towVehicle.gcwr);
+  const trailerGvwr = catNum(rvConfig.gvwr);
+  const trailerAxleLimit = catNum(rvConfig.trailerAxleLimit);
+
+  return {
+    vehicleOnlyWeight,
+    combinedWeight,
+    hitchLoad,
+    estimatedTrailerWeight,
+    towVehicleGvwrMargin: towVehicleGvwr - finalTowVehicleWeight,
+    frontGawrMargin: frontGawr - catNum(finalHitched?.front),
+    rearGawrMargin: rearGawr - catNum(finalHitched?.drive),
+    gcwrMargin: gcwr - combinedWeight,
+    trailerGvwrMargin: trailerGvwr - estimatedTrailerWeight,
+    trailerAxleMargin: trailerAxleLimit - trailerAxleWeight,
+    frontAxleRestoration,
+    hasTowVehicleGvwr: !!towVehicleGvwr && !!finalTowVehicleWeight,
+    hasFrontGawr: !!frontGawr && !!catNum(finalHitched?.front),
+    hasRearGawr: !!rearGawr && !!catNum(finalHitched?.drive),
+    hasGcwr: !!gcwr && !!combinedWeight,
+    hasTrailerGvwr: !!trailerGvwr && !!estimatedTrailerWeight,
+    hasTrailerAxleLimit: !!trailerAxleLimit && !!trailerAxleWeight,
+    hasWdAndNoWd: isTravelTrailer && !!catTripleTotal(log.hitchedWd) && !!catTripleTotal(log.hitchedNoWd),
+  };
+}
+
+function formatDisplayDate(dateString) {
+  if (!dateString) return "No date";
+  const [year, month, day] = String(dateString).split("-").map(Number);
+  if (!year || !month || !day) return dateString;
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function NumberField({ label, value, onChange, placeholder = "" }) {
