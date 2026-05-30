@@ -116,6 +116,7 @@ function ensureStableIds(state) {
   if (!state || typeof state !== "object") return state;
   const next = clone(state);
 
+  next.appTemplate = mergeTemplateDefaults(next.appTemplate);
   if (Array.isArray(next.family)) next.family = normalizeFamilyForSync(next.family);
   if (Array.isArray(next.recipes)) next.recipes = normalizeRecipesForSync(next.recipes);
   if (Array.isArray(next.trips)) next.trips = next.trips.map(normalizeTripForSync);
@@ -201,7 +202,7 @@ function migrateImportedBackupState(importedState) {
 
   const migrated = {
     trips,
-    appTemplate: clean.appTemplate || checklistTemplates,
+    appTemplate: mergeTemplateDefaults(clean.appTemplate),
     maintenanceItems: Array.isArray(clean.maintenanceItems) ? clone(clean.maintenanceItems) : [],
     rvConfig: clean.rvConfig || {},
     towVehicle: clean.towVehicle || {},
@@ -1045,7 +1046,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [trip, setTrip]                     = useState(() => clone(emptyTripState));
   const [trips, setTrips]                   = useState(() => getInitial("trips", []));
   const [activeTripId, setActiveTripId]     = useState(null);
-  const [appTemplate, setAppTemplate]       = useState(() => getInitial("appTemplate", checklistTemplates));
+  const [appTemplate, setAppTemplate]       = useState(() => mergeTemplateDefaults(getInitial("appTemplate", checklistTemplates)));
   const [tasks, setTasks]                   = useState({});
   const [family, setFamily]                 = useState([]);
   const [activeMember, setActiveMember]     = useState(null);
@@ -2720,9 +2721,62 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
   const estimatedTrailerAxleWeight = Math.max(0, trailerWeight - tongueWeight);
   const trailerAxleMargin = (Number(rvConfig.trailerAxleLimit) || 0) - estimatedTrailerAxleWeight;
 
+  const exportWeightData = () => {
+    const exportedAt = new Date().toISOString();
+    const dateStamp = exportedAt.slice(0, 10);
+    const calculatedCatScaleLogs = (catScaleLogs || []).map((log) => ({
+      ...log,
+      calculatedResults: calculateCatScaleResults(log, rvConfig, towVehicle),
+    }));
+
+    const payload = {
+      app: "CampReady",
+      exportType: "weight-data",
+      exportVersion: 1,
+      exportedAt,
+      rvConfig,
+      towVehicle,
+      currentEstimatedWeights: {
+        rvType: rvConfig.rvType,
+        loadedTrailerWeight: trailerWeight,
+        tongueOrPinWeight: tongueWeight,
+        tongueOrPinPercent: towVehicle.tongueWeightPercent || calculatedTonguePercent || defaultTonguePercent,
+        calculatedPayload,
+        gcwrMargin,
+        payloadMargin,
+        hitchMargin,
+        hitchTongueMargin,
+        trailerPayload,
+        trailerCargo,
+        estimatedTrailerAxleWeight,
+        trailerAxleMargin,
+      },
+      catScaleLogs: calculatedCatScaleLogs,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `campready-weight-data-${dateStamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <CollapsibleCard title="Weight Ratings & Calculations" open={open.weight} onToggle={() => toggle("weight")}>
       <div className="space-y-4">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={exportWeightData}
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Export Weight Data
+          </button>
+        </div>
         <NestedSection title="Tow Vehicle" open={open.weightTow} onToggle={() => toggle("weightTow")}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <NumberField label={<HelpLabel label="GVWR (lb)" help="Gross Vehicle Weight Rating for the tow vehicle or motorhome." />} value={towVehicle.gvwr} onChange={(v) => setTowVehicle({ ...towVehicle, gvwr: v })} />
