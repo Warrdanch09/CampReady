@@ -2965,7 +2965,11 @@ function CatScaleResults({ results, rvType }) {
         <MarginCard label="Front GAWR margin" value={results.frontGawrMargin} active={results.hasFrontGawr} />
         <MarginCard label="Rear GAWR margin" value={results.rearGawrMargin} active={results.hasRearGawr} />
         <MarginCard label="GCWR margin" value={results.gcwrMargin} active={results.hasGcwr} />
+        <MarginCard label={rvType === "Fifth Wheel" ? "Payload margin after pin" : "Payload margin after tongue"} value={results.payloadMargin} active={results.hasPayload} />
+        <MarginCard label="GTWR / hitch tow margin" value={results.hitchTowMargin} active={results.hasHitchTowCapacity} />
+        <MarginCard label={rvType === "Fifth Wheel" ? "Hitch pin margin" : "Hitch tongue margin"} value={results.hitchTongueMargin} active={results.hasHitchTongueCapacity} />
         <MarginCard label="Trailer GVWR margin" value={results.trailerGvwrMargin} active={results.hasTrailerGvwr} />
+        <MarginCard label="Trailer payload margin" value={results.trailerPayloadMargin} active={results.hasTrailerPayload} />
         <MarginCard label="Trailer axle margin" value={results.trailerAxleMargin} active={results.hasTrailerAxleLimit} />
         {isTravelTrailer && <MarginCard label="Front axle restoration" value={results.frontAxleRestoration} active={results.hasWdAndNoWd} />}
       </div>
@@ -3037,8 +3041,14 @@ function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
   const frontGawr = catNum(towVehicle.frontGawr);
   const rearGawr = catNum(towVehicle.rearGawr);
   const gcwr = catNum(towVehicle.gcwr);
+  const hitchTowCapacity = catNum(towVehicle.hitchRating);
+  const hitchTongueCapacity = catNum(towVehicle.hitchTongueRating);
   const trailerGvwr = catNum(rvConfig.gvwr);
+  const trailerEmptyWeight = catNum(rvConfig.emptyWeight);
   const trailerAxleLimit = catNum(rvConfig.trailerAxleLimit);
+  const towVehiclePayload = towVehicleGvwr && vehicleOnlyWeight ? towVehicleGvwr - vehicleOnlyWeight : 0;
+  const trailerPayload = trailerGvwr && trailerEmptyWeight ? trailerGvwr - trailerEmptyWeight : 0;
+  const trailerCargo = trailerEmptyWeight ? Math.max(0, estimatedTrailerWeight - trailerEmptyWeight) : 0;
 
   return {
     vehicleOnlyWeight,
@@ -3049,14 +3059,22 @@ function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
     frontGawrMargin: frontGawr - catNum(finalHitched?.front),
     rearGawrMargin: rearGawr - catNum(finalHitched?.drive),
     gcwrMargin: gcwr - combinedWeight,
+    payloadMargin: towVehiclePayload - hitchLoad,
+    hitchTowMargin: hitchTowCapacity - estimatedTrailerWeight,
+    hitchTongueMargin: hitchTongueCapacity - hitchLoad,
     trailerGvwrMargin: trailerGvwr - estimatedTrailerWeight,
+    trailerPayloadMargin: trailerPayload - trailerCargo,
     trailerAxleMargin: trailerAxleLimit - trailerAxleWeight,
     frontAxleRestoration,
     hasTowVehicleGvwr: !!towVehicleGvwr && !!finalTowVehicleWeight,
     hasFrontGawr: !!frontGawr && !!catNum(finalHitched?.front),
     hasRearGawr: !!rearGawr && !!catNum(finalHitched?.drive),
     hasGcwr: !!gcwr && !!combinedWeight,
+    hasPayload: !!towVehiclePayload && !!hitchLoad,
+    hasHitchTowCapacity: !!hitchTowCapacity && !!estimatedTrailerWeight,
+    hasHitchTongueCapacity: !!hitchTongueCapacity && !!hitchLoad,
     hasTrailerGvwr: !!trailerGvwr && !!estimatedTrailerWeight,
+    hasTrailerPayload: !!trailerPayload && !!trailerCargo,
     hasTrailerAxleLimit: !!trailerAxleLimit && !!trailerAxleWeight,
     hasWdAndNoWd: isTravelTrailer && !!catTripleTotal(log.hitchedWd) && !!catTripleTotal(log.hitchedNoWd),
   };
