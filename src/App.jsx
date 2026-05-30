@@ -64,6 +64,31 @@ function normalizeShoppingStatuses(value) {
   return [];
 }
 
+
+function stableHash(value) {
+  const text = String(value || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function normalizeRecipesForSync(recipes = []) {
+  return (recipes || []).map((meal, mealIndex) => {
+    const dayPart = meal.dayKey || meal.dateKey || `${meal.destinationId || "unassigned"}-day-${Number(meal.dayNumber ?? meal.night) || 1}`;
+    const mealId = meal.id || `meal-${stableHash(`${meal.name || "meal"}|${meal.type || ""}|${dayPart}|${mealIndex}`)}`;
+    return {
+      ...meal,
+      id: mealId,
+      ingredients: (meal.ingredients || []).map((ing, ingIndex) => ({
+        ...ing,
+        id: ing.id || `ing-${stableHash(`${mealId}|${ing.name || "ingredient"}|${ing.qty || ""}|${ing.unit || ""}|${ing.category || ""}|${ing.store || ""}|${ingIndex}`)}`,
+      })),
+    };
+  });
+}
+
 function normalizeFamilyForSync(family = []) {
   return (family || []).map((member) => ({
     ...member,
@@ -79,6 +104,7 @@ function normalizeTripForSync(trip) {
   if (!trip || typeof trip !== "object") return trip;
   const nextTrip = { ...trip };
   nextTrip.family = normalizeFamilyForSync(nextTrip.family || []);
+  nextTrip.recipes = normalizeRecipesForSync(nextTrip.recipes || []);
   nextTrip.shoppingStatuses = normalizeShoppingStatuses(nextTrip.shoppingStatuses || nextTrip.shoppingChecks);
   delete nextTrip.shoppingChecks;
   delete nextTrip.selectedMeals;
@@ -91,6 +117,7 @@ function ensureStableIds(state) {
   const next = clone(state);
 
   if (Array.isArray(next.family)) next.family = normalizeFamilyForSync(next.family);
+  if (Array.isArray(next.recipes)) next.recipes = normalizeRecipesForSync(next.recipes);
   if (Array.isArray(next.trips)) next.trips = next.trips.map(normalizeTripForSync);
   if (next.trip) next.trip = normalizeTripForSync(next.trip);
 
@@ -159,7 +186,7 @@ function migrateImportedBackupState(importedState) {
       destinations: clone(trip.destinations || legacyTrip?.destinations || []),
       tasks: shouldAttachRootData ? clone(trip.tasks || rootScopedData.tasks || {}) : clone(trip.tasks || {}),
       family: shouldAttachRootData ? normalizeFamilyForSync(trip.family || rootScopedData.family || []) : normalizeFamilyForSync(trip.family || []),
-      recipes: shouldAttachRootData ? clone(trip.recipes || rootScopedData.recipes || []) : clone(trip.recipes || []),
+      recipes: shouldAttachRootData ? normalizeRecipesForSync(trip.recipes || rootScopedData.recipes || []) : normalizeRecipesForSync(trip.recipes || []),
       manualShoppingItems: shouldAttachRootData ? clone(trip.manualShoppingItems || rootScopedData.manualShoppingItems || []) : clone(trip.manualShoppingItems || []),
       shoppingStatuses: shouldAttachRootData
         ? normalizeShoppingStatuses(trip.shoppingStatuses || trip.shoppingChecks || rootScopedData.shoppingStatuses || [])
@@ -232,6 +259,22 @@ const checklistTemplates = {
       Cleaning: ["Sweep floors","Wipe counters","Clean bathroom","Sanitize fridge","Empty trash"],
       Consumables: ["Check paper plates","Check plastic silverware","Check napkins and paper towels","Check toilet paper","Check trash bags","Check dish soap and hand soap","Check first aid supplies"],
       Linens: ["Pack bedding","Pack pillows","Pack blankets","Pack bath towels","Pack beach towels","Pack kitchen towels"],
+    },
+  },
+  towVehiclePrep: {
+    label: "Tow Vehicle Prep",
+    groups: {
+      "Exterior & Fluids": ["Wash tow vehicle", "Wax tow vehicle", "Check oil", "Check coolant", "Check windshield washer fluid", "Fill fuel tank"],
+      "Tires & Safety": ["Check tire pressure", "Inspect tire tread and sidewalls", "Check spare tire", "Check jack and tire tools", "Check emergency kit", "Check mirrors"],
+      "Hitch & Towing": ["Inspect hitch receiver", "Inspect hitch pin and clip", "Inspect weight distribution bars", "Inspect sway control", "Confirm brake controller settings", "Test trailer light connection"],
+    },
+  },
+  towVehiclePacking: {
+    label: "Tow Vehicle Packing",
+    groups: {
+      "Cargo & Gear": ["Load firewood", "Load bikes", "Load tools", "Load air compressor", "Load leveling blocks", "Load outdoor games"],
+      "Safety & Roadside": ["Pack jumper cables", "Pack tire gauge", "Pack first aid kit", "Pack flashlight", "Pack gloves", "Pack ratchet straps"],
+      "Cab Items": ["Pack charging cables", "Pack snacks", "Pack drinks", "Pack trash bags", "Pack travel documents", "Pack sunglasses"],
     },
   },
   departHome: {
@@ -338,7 +381,7 @@ function sanitizeSeedData(state) {
     next.trips = next.trips.filter((trip) => !isStarterTripRecord(trip));
   }
   if (Array.isArray(next.family)) next.family = next.family.filter((m) => !isLegacySeedFamilyMember(m));
-  if (Array.isArray(next.recipes)) next.recipes = next.recipes.filter((r) => !isLegacySeedRecipe(r));
+  if (Array.isArray(next.recipes)) next.recipes = normalizeRecipesForSync(next.recipes.filter((r) => !isLegacySeedRecipe(r)));
   if (Array.isArray(next.manualShoppingItems)) next.manualShoppingItems = next.manualShoppingItems.filter((i) => !isLegacySeedShoppingItem(i));
   if (Array.isArray(next.maintenanceItems)) next.maintenanceItems = next.maintenanceItems.filter((i) => !isLegacySeedMaintenance(i));
   if (Array.isArray(next.rvNotes)) next.rvNotes = next.rvNotes.filter((n) => !isLegacySeedNote(n));
@@ -521,6 +564,8 @@ function buildTasks(template, destinations) {
   const tasks = {
     prep: buildSection(template, "prep"),
     inside: buildSection(template, "inside"),
+    towVehiclePrep: buildSection(template, "towVehiclePrep"),
+    towVehiclePacking: buildSection(template, "towVehiclePacking"),
     departHome: buildSection(template, "departHome"),
     postTrip: buildSection(template, "postTrip"),
   };
@@ -1016,6 +1061,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const checklistNav = useMemo(() => [
     { key: "prep", label: "RV Prep" },
     { key: "inside", label: "Inside Prep" },
+    { key: "towVehiclePrep", label: "Tow Vehicle Prep" },
+    { key: "towVehiclePacking", label: "Tow Vehicle Packing" },
     { key: "departHome", label: "Depart Home" },
     ...trip.destinations.flatMap((dest) => [
       { key: `destination-${dest.id}`, label: dest.name || "Destination", header: true },
@@ -1084,7 +1131,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     destinations: clone(trip?.destinations || record.destinations || []),
     tasks: clone(tasks || record.tasks || {}),
     family: normalizeFamilyForSync(family || record.family || []),
-    recipes: clone(recipes || record.recipes || []),
+    recipes: normalizeRecipesForSync(recipes || record.recipes || []),
     manualShoppingItems: clone(manualShoppingItems || record.manualShoppingItems || []),
     shoppingStatuses: normalizeShoppingStatuses(shoppingStatuses || record.shoppingStatuses || []),
   }), [activeTripId, trip, tasks, family, recipes, manualShoppingItems, shoppingStatuses]);
@@ -1107,7 +1154,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     const normalizedFamily = normalizeFamilyForSync(record.family || []);
     setFamily(clone(normalizedFamily));
     setActiveMember(normalizedFamily?.[0]?.id || null);
-    setRecipes(clone(record.recipes || []));
+    setRecipes(normalizeRecipesForSync(record.recipes || []));
     setManualShoppingItems(clone(record.manualShoppingItems || []));
     setShoppingStatuses(normalizeShoppingStatuses(record.shoppingStatuses || record.shoppingChecks || []));
   }, [appTemplate]);
@@ -1532,7 +1579,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       destinations: clone(newTrip.destinations || []),
       tasks: clone(newTrip.tasks || {}),
       family: normalizeFamilyForSync(newTrip.family || []),
-      recipes: clone(newTrip.recipes || []),
+      recipes: normalizeRecipesForSync(newTrip.recipes || []),
       manualShoppingItems: clone(newTrip.manualShoppingItems || []),
       shoppingStatuses: normalizeShoppingStatuses(newTrip.shoppingStatuses || []),
       status: "Current",
@@ -2200,6 +2247,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
   const firstDay = tripDays[0];
   const [mealForm, setMealForm] = useState({ name: "", type: "Dinner", dayKey: firstDay?.key || "", destinationId: firstDay?.destinationId || destinations[0]?.id || "", dayNumber: firstDay?.dayNumber || 1, dateKey: firstDay?.dateKey || "", notes: "", ingredients: [] });
   const [ingredient, setIngredient] = useState({ name: "", qty: 1, unit: "pack", category: "Pantry" });
+  const [editingIngredientId, setEditingIngredientId] = useState(null);
   const [manualItem, setManualItem] = useState({ name: "", qty: 1, unit: "", category: "Camp Supplies", store: "Unassigned" });
   const [editingMealId, setEditingMealId] = useState(null);
   const [storeFilter, setStoreFilter] = useState("All");
@@ -2240,19 +2288,57 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
     .slice()
     .sort((a, b) => (mealTypeRank[a.type] || 99) - (mealTypeRank[b.type] || 99) || a.name.localeCompare(b.name));
 
+  const resetIngredientForm = () => {
+    setIngredient({ name: "", qty: 1, unit: "pack", category: "Pantry" });
+    setEditingIngredientId(null);
+  };
+
   const addIngredient = () => {
     if (!ingredient.name.trim()) return;
+    setMealForm((prev) => {
+      const nextIngredient = {
+        ...ingredient,
+        id: editingIngredientId || ingredient.id || uid("ing"),
+        name: ingredient.name.trim(),
+        qty: Number(ingredient.qty) || 1,
+        store: ingredient.store || "Unassigned",
+      };
+      if (editingIngredientId) {
+        return {
+          ...prev,
+          ingredients: (prev.ingredients || []).map((ing) => (ing.id === editingIngredientId ? nextIngredient : ing)),
+        };
+      }
+      return {
+        ...prev,
+        ingredients: [...(prev.ingredients || []), nextIngredient],
+      };
+    });
+    resetIngredientForm();
+  };
+
+  const startEditIngredient = (ing) => {
+    const id = ing.id || uid("ing");
     setMealForm((prev) => ({
       ...prev,
-      ingredients: [...(prev.ingredients || []), { ...ingredient, id: uid("ing"), name: ingredient.name.trim(), qty: Number(ingredient.qty) || 1, store: "Unassigned" }],
+      ingredients: (prev.ingredients || []).map((item) => (item === ing || item.id === ing.id ? { ...item, id } : item)),
     }));
-    setIngredient({ name: "", qty: 1, unit: "pack", category: "Pantry" });
+    setIngredient({
+      id,
+      name: ing.name || "",
+      qty: ing.qty ?? 1,
+      unit: ing.unit || "pack",
+      category: ing.category || "Pantry",
+      store: ing.store || "Unassigned",
+    });
+    setEditingIngredientId(id);
   };
 
   const resetMealForm = () => {
     const day = tripDays[0];
     setMealForm({ name: "", type: "Dinner", dayKey: day?.key || "", destinationId: day?.destinationId || destinations[0]?.id || "", dayNumber: day?.dayNumber || 1, dateKey: day?.dateKey || "", notes: "", ingredients: [] });
     setEditingMealId(null);
+    resetIngredientForm();
   };
 
   const saveMeal = () => {
@@ -2285,7 +2371,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
       dayNumber: day?.dayNumber || Number(meal.dayNumber ?? meal.night) || 1,
       dateKey: day?.dateKey || meal.dateKey || "",
       notes: meal.notes || "",
-      ingredients: meal.ingredients || [],
+      ingredients: (meal.ingredients || []).map((ing) => ({ ...ing, id: ing.id || uid("ing") })),
     });
     setEditingMealId(meal.id);
     setOpenSections((prev) => ({ ...prev, addMeal: true }));
@@ -2396,13 +2482,17 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
                     {categoryOptions.map((cat) => <option key={cat}>{cat}</option>)}
                   </select>
                 </Field>
-                <Field label="Add"><button type="button" onClick={addIngredient} className="rounded-2xl bg-slate-900 px-4 py-2 text-white"><Plus size={18} /></button></Field>
+                <Field label={editingIngredientId ? "Save" : "Add"}><button type="button" onClick={addIngredient} className="rounded-2xl bg-slate-900 px-4 py-2 text-white">{editingIngredientId ? "Save" : <Plus size={18} />}</button></Field>
               </div>
+              {editingIngredientId && <button type="button" onClick={resetIngredientForm} className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold">Cancel ingredient edit</button>}
               <div className="mt-3 space-y-2">
                 {(mealForm.ingredients || []).map((ing, index) => (
-                  <div key={ing.id || `${ing.name}-${index}`} className="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm">
-                    <span>{ing.qty} {ing.unit} {ing.name} • {ing.category}</span>
-                    <button type="button" onClick={() => setMealForm((prev) => ({ ...prev, ingredients: (prev.ingredients || []).filter((_, i) => i !== index) }))}><Trash2 size={15} /></button>
+                  <div key={ing.id || `${ing.name}-${index}`} className={`flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm ${editingIngredientId === ing.id ? "ring-2 ring-slate-300" : ""}`}>
+                    <span className="min-w-0 flex-1 break-words">{ing.qty} {ing.unit} {ing.name} • {ing.category}</span>
+                    <div className="flex shrink-0 gap-2">
+                      <button type="button" onClick={() => startEditIngredient(ing)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold">Edit</button>
+                      <button type="button" onClick={() => setMealForm((prev) => ({ ...prev, ingredients: (prev.ingredients || []).filter((item, i) => (ing.id ? item.id !== ing.id : i !== index)) }))}><Trash2 size={15} /></button>
+                    </div>
                   </div>
                 ))}
                 {(!mealForm.ingredients || mealForm.ingredients.length === 0) && <div className="text-xs text-slate-500">No ingredients yet. You can still save this meal and add recipe notes.</div>}

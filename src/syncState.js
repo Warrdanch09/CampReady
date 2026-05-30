@@ -345,6 +345,24 @@ function toItemMap(array) {
 function itemKey(item, index = 0) {
   if (item.id !== undefined && item.id !== null) return `id:${item.id}`;
   if (item.key !== undefined && item.key !== null) return `key:${item.key}`;
+
+  // Legacy meal records may not have had durable ids. Do not merge two meals
+  // together just because they share a name; the assigned trip day/date and meal
+  // type are part of the identity. This protects cases like two "Sandwiches"
+  // meals on different trip days or repeated destination names.
+  if (item.name !== undefined && (item.dayKey || item.dateKey || item.destinationId || item.dayNumber || item.night || item.type)) {
+    return [
+      "meal",
+      String(item.name || "").trim().toLowerCase(),
+      String(item.type || "").trim().toLowerCase(),
+      String(item.dayKey || ""),
+      String(item.dateKey || ""),
+      String(item.destinationId || ""),
+      String(item.dayNumber ?? item.night ?? ""),
+      String(index),
+    ].join(":");
+  }
+
   if (item.name !== undefined && item.name !== null) return `name:${String(item.name).trim().toLowerCase()}`;
   return `idx:${index}`;
 }
