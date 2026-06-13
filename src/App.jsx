@@ -160,13 +160,13 @@ function stableHash(value) {
 }
 
 function normalizeRecipesForSync(recipes = []) {
-  return (recipes || []).map((meal, mealIndex) => {
+  return asArray(recipes).map((meal, mealIndex) => {
     const dayPart = meal.dayKey || meal.dateKey || `${meal.destinationId || "unassigned"}-day-${Number(meal.dayNumber ?? meal.night) || 1}`;
     const mealId = meal.id || `meal-${stableHash(`${meal.name || "meal"}|${meal.type || ""}|${dayPart}|${mealIndex}`)}`;
     return {
       ...meal,
       id: mealId,
-      ingredients: (meal.ingredients || []).map((ing, ingIndex) => ({
+      ingredients: asArray(meal?.ingredients).map((ing, ingIndex) => ({
         ...ing,
         id: ing.id || `ing-${stableHash(`${mealId}|${ing.name || "ingredient"}|${ing.qty || ""}|${ing.unit || ""}|${ing.category || ""}|${ing.store || ""}|${ingIndex}`)}`,
       })),
@@ -175,10 +175,10 @@ function normalizeRecipesForSync(recipes = []) {
 }
 
 function normalizeFamilyForSync(family = []) {
-  return (family || []).map((member) => ({
+  return asArray(family).map((member) => ({
     ...member,
     id: member.id || uid("member"),
-    items: (member.items || []).map((item) => ({
+    items: asArray(member?.items).map((item) => ({
       ...item,
       id: item.id || uid("pack"),
     })),
@@ -188,8 +188,8 @@ function normalizeFamilyForSync(family = []) {
 function normalizeTripForSync(trip) {
   if (!trip || typeof trip !== "object") return trip;
   const nextTrip = { ...trip };
-  nextTrip.family = normalizeFamilyForSync(nextTrip.family || []);
-  nextTrip.recipes = normalizeRecipesForSync(nextTrip.recipes || []);
+  nextTrip.family = normalizeFamilyForSync(nextTrip.family);
+  nextTrip.recipes = normalizeRecipesForSync(nextTrip.recipes);
   nextTrip.shoppingStatuses = normalizeShoppingStatuses(nextTrip.shoppingStatuses || nextTrip.shoppingChecks);
   delete nextTrip.shoppingChecks;
   delete nextTrip.selectedMeals;
@@ -434,7 +434,7 @@ function mergeTemplateDefaults(savedTemplate) {
     });
 
     Object.entries(savedSection.groups || {}).forEach(([groupName, savedItems]) => {
-      if (!section.groups[groupName]) section.groups[groupName] = (savedItems || []).map(normalizeTemplateItem);
+      if (!section.groups[groupName]) section.groups[groupName] = asArray(savedItems).map(normalizeTemplateItem);
     });
 
     merged[sectionKey] = section;
@@ -444,7 +444,7 @@ function mergeTemplateDefaults(savedTemplate) {
     if (!merged[sectionKey]) {
       merged[sectionKey] = {
         label: savedSection?.label || sectionKey,
-        groups: Object.fromEntries(Object.entries(savedSection?.groups || {}).map(([groupName, items]) => [groupName, (items || []).map(normalizeTemplateItem)])),
+        groups: Object.fromEntries(Object.entries(asObject(savedSection?.groups)).map(([groupName, items]) => [groupName, asArray(items).map(normalizeTemplateItem)])),
       };
     }
   });
@@ -588,7 +588,7 @@ function formatDateRangeLabel(start, end) {
 
 function buildDestinationDateRanges(departureDate, destinations) {
   let cursor = parseDateOnly(departureDate);
-  return (destinations || []).map((dest) => {
+  return asArray(destinations).map((dest) => {
     if (!cursor) return "";
     const nights = Math.max(1, Number(dest.nights) || 1);
     const start = cursor;
@@ -1888,7 +1888,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
       );
       return next;
     });
-    setFamily((prev) => prev.map((m) => ({ ...m, items: m.items.map((i) => ({ ...i, packed: false })) })));
+    setFamily((prev) => prev.map((m) => ({ ...m, items: asArray(m.items).map((i) => ({ ...i, packed: false })) })));
     setShoppingStatuses([]);
   };
 
@@ -2038,7 +2038,7 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, duplicateTrip, arc
                 <div>
                   <div className="text-xs font-semibold text-slate-500">{t.status} • Created {t.createdAt}</div>
                   <h3 className="text-lg font-bold">{t.name}</h3>
-                  <p className="text-sm text-slate-600">{(t.destinations || []).map((d) => d.name).join(" → ")}</p>
+                  <p className="text-sm text-slate-600">{asArray(t.destinations).map((d) => d.name).join(" → ")}</p>
                 </div>
                 <button
                   type="button"
@@ -2451,7 +2451,7 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
     setFamily((prev) => prev.map((m) => m.id === member.id ? { ...m, items: [...(m.items || []), { id: uid("pack"), name: newItem.trim(), qty: Number(newQty) || 1, packed: false }] } : m));
     setNewItem(""); setNewQty(1);
   };
-  const update = (itemId, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).map((item) => item.id === itemId ? { ...item, ...updates } : item) } : m));
+  const update = (itemId, updates) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: asArray(m.items).map((item) => item.id === itemId ? { ...item, ...updates } : item) } : m));
   const remove = (itemId) => setFamily((prev) => prev.map((m) => member && m.id === member.id ? { ...m, items: (m.items || []).filter((item) => item.id !== itemId) } : m));
 
   return (
@@ -2467,7 +2467,7 @@ function PackingView({ family, setFamily, activeMember, setActiveMember }) {
         <button type="button" onClick={addItem} className="rounded-2xl bg-slate-900 px-4 text-white"><Plus size={18} /></button>
       </div>
       <div className="space-y-2">
-        {member?.items.map((item, index) => (
+        {asArray(member?.items).map((item, index) => (
           <div key={item.id || `${item.name}-${index}`} className={`rounded-2xl border p-3 ${item.packed ? "border-green-200 bg-green-50" : "border-slate-200 bg-white"}`}>
             <div className="grid gap-2 sm:grid-cols-[auto_80px_1fr_auto]">
               <button type="button" onClick={() => update(item.id, { packed: !item.packed })}>{item.packed ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
@@ -2550,7 +2550,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
       if (editingIngredientId) {
         return {
           ...prev,
-          ingredients: (prev.ingredients || []).map((ing) => (ing.id === editingIngredientId ? nextIngredient : ing)),
+          ingredients: asArray(prev.ingredients).map((ing) => (ing.id === editingIngredientId ? nextIngredient : ing)),
         };
       }
       return {
@@ -2565,7 +2565,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
     const id = ing.id || uid("ing");
     setMealForm((prev) => ({
       ...prev,
-      ingredients: (prev.ingredients || []).map((item) => (item === ing || item.id === ing.id ? { ...item, id } : item)),
+      ingredients: asArray(prev.ingredients).map((item) => (item === ing || item.id === ing.id ? { ...item, id } : item)),
     }));
     setIngredient({
       id,
@@ -2615,7 +2615,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
       dayNumber: day?.dayNumber || Number(meal.dayNumber ?? meal.night) || 1,
       dateKey: day?.dateKey || meal.dateKey || "",
       notes: meal.notes || "",
-      ingredients: (meal.ingredients || []).map((ing) => ({ ...ing, id: ing.id || uid("ing") })),
+      ingredients: asArray(meal.ingredients).map((ing) => ({ ...ing, id: ing.id || uid("ing") })),
     });
     setEditingMealId(meal.id);
     setOpenSections((prev) => ({ ...prev, addMeal: true }));
@@ -2632,7 +2632,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
   const updateStore = (item, store) => {
     setRecipes((prev) => prev.map((meal) => ({
       ...meal,
-      ingredients: (meal.ingredients || []).map((ing) => makeShoppingKey(ing) === item.key ? { ...ing, store } : ing),
+      ingredients: asArray(meal.ingredients).map((ing) => makeShoppingKey(ing) === item.key ? { ...ing, store } : ing),
     })));
     setManualShoppingItems((prev) => prev.map((m) => item.manualIds?.includes(m.id) ? { ...m, store } : m));
   };
@@ -2730,7 +2730,7 @@ function FoodView({ trip, destinations, recipes, setRecipes, shoppingList, shopp
               </div>
               {editingIngredientId && <button type="button" onClick={resetIngredientForm} className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold">Cancel ingredient edit</button>}
               <div className="mt-3 space-y-2">
-                {(mealForm.ingredients || []).map((ing, index) => (
+                {asArray(mealForm.ingredients).map((ing, index) => (
                   <div key={ing.id || `${ing.name}-${index}`} className={`flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm ${editingIngredientId === ing.id ? "ring-2 ring-slate-300" : ""}`}>
                     <span className="min-w-0 flex-1 break-words">{ing.qty} {ing.unit} {ing.name} • {ing.category}</span>
                     <div className="flex shrink-0 gap-2">
