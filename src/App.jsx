@@ -20,9 +20,94 @@ import { mergeStates, prepareStateForSave, getClientId, stripSyncMetadata } from
 // -----------------------------------------------------------------------------
 
 const uid = (prefix = "id") => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const clone = (value) => JSON.parse(JSON.stringify(value));
+const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const pct = (done, total) => (total ? Math.round((done / total) * 100) : 0);
 const STORAGE_KEY = "campready-mvp-state-v1";
+
+const DEFAULT_RV_CONFIG = {
+  rvType: "Travel Trailer",
+  year: "", make: "", model: "", trim: "", vin: "", licensePlate: "",
+  heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "",
+  gvwr: "", emptyWeight: "", trailerAxleLimit: "",
+  tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "",
+  batteryType: "", batteryPurchaseDate: "", roofType: "",
+  propaneTankQty: "", propaneTankCapacity: "",
+  freshTankQty: "", freshTankCapacity: "",
+  grayTankQty: "", grayTankCapacity: "",
+  blackTankQty: "", blackTankCapacity: "",
+  notes: "",
+};
+
+const DEFAULT_TOW_VEHICLE = {
+  year: "", make: "", model: "", trim: "", vin: "", licensePlate: "",
+  lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "",
+  tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "",
+  gvwr: "", gcwr: "", frontGawr: "", rearGawr: "",
+  hitchRating: "", hitchTongueRating: "",
+  measuredTongueWeight: "", tongueWeightPercent: "",
+  loadedTrailerWeight: "", loadedTowVehicleWeight: "",
+};
+
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const withObjectDefaults = (value, defaults) => ({ ...defaults, ...asObject(value) });
+
+function normalizeTasksForUi(tasks) {
+  if (!tasks || typeof tasks !== "object" || Array.isArray(tasks)) return {};
+  const next = {};
+  Object.entries(tasks).forEach(([sectionKey, section]) => {
+    if (!section || typeof section !== "object" || Array.isArray(section)) return;
+    next[sectionKey] = {};
+    Object.entries(section).forEach(([groupName, group]) => {
+      next[sectionKey][groupName] = Array.isArray(group)
+        ? group.filter((task) => task && typeof task === "object").map((task, index) => ({
+            id: task.id || `${sectionKey}-${groupName}-${index}`,
+            name: task.name || "Checklist item",
+            done: Boolean(task.done),
+            na: Boolean(task.na),
+          }))
+        : [];
+    });
+  });
+  return next;
+}
+
+function normalizeTripRecordForUi(trip) {
+  const source = asObject(trip);
+  const destinations = asArray(source.destinations).map((dest, index) => ({
+    id: dest?.id || `dest-${index + 1}`,
+    name: dest?.name || `Destination ${index + 1}`,
+    nights: Math.max(1, Number(dest?.nights) || 1),
+    ...asObject(dest),
+  }));
+  return normalizeTripForSync({
+    ...source,
+    id: source.id || uid("trip"),
+    name: source.name || "Camping Trip",
+    departureDate: source.departureDate || "",
+    destinations,
+    tasks: normalizeTasksForUi(source.tasks),
+    family: normalizeFamilyForSync(asArray(source.family)),
+    recipes: normalizeRecipesForSync(asArray(source.recipes)),
+    manualShoppingItems: asArray(source.manualShoppingItems),
+    shoppingStatuses: normalizeShoppingStatuses(source.shoppingStatuses || source.shoppingChecks),
+  });
+}
+
+function normalizeStateForUi(state) {
+  if (!state || typeof state !== "object") return null;
+  const next = { ...state };
+  next.trips = asArray(next.trips).filter((trip) => trip && typeof trip === "object").map(normalizeTripRecordForUi);
+  next.appTemplate = mergeTemplateDefaults(next.appTemplate);
+  next.maintenanceItems = asArray(next.maintenanceItems);
+  next.rvConfig = withObjectDefaults(next.rvConfig, DEFAULT_RV_CONFIG);
+  next.towVehicle = withObjectDefaults(next.towVehicle, DEFAULT_TOW_VEHICLE);
+  next.rvNotes = asArray(next.rvNotes);
+  next.catScaleLogs = asArray(next.catScaleLogs).filter((log) => log && typeof log === "object");
+  if (next.trip) next.trip = normalizeTripRecordForUi(next.trip);
+  if (!next.trips.some((trip) => trip.id === next.activeTripId)) next.activeTripId = next.trips[0]?.id || null;
+  return next;
+}
 
 function makeShoppingKey(item = {}) {
   return [
@@ -127,7 +212,7 @@ function ensureStableIds(state) {
   delete next.selectedMeals;
   delete next.activeMember; // keep this device's selected family member local only
 
-  return next;
+  return normalizeStateForUi(next) || next;
 }
 
 
@@ -446,7 +531,7 @@ function sanitizeSeedData(state) {
   if (isStarterTripRecord(next.trip) || !next.activeTripId) {
     next.trip = next.trips?.[0] ? { ...clone(next.trips[0]), status: undefined, createdAt: undefined } : clone(emptyTripState);
   }
-  return hasRealUserData(next) ? ensureStableIds(next) : null;
+  return hasRealUserData(next) ? (normalizeStateForUi(ensureStableIds(next)) || ensureStableIds(next)) : null;
 }
 
 const defaultMaintenanceItems = [];
@@ -840,6 +925,35 @@ async function loadAndMergeUserState(userId) {
   }
 }
 
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("CampReady render crash", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-slate-100 p-4 text-slate-900">
+          <div className="mx-auto max-w-xl rounded-3xl border border-red-200 bg-white p-5 shadow-sm">
+            <div className="text-sm font-semibold text-red-700">CampReady hit a display error instead of loading a blank screen.</div>
+            <p className="mt-2 text-sm text-slate-600">This usually means older saved cloud data is shaped differently than the newest app expects. Try Refresh, or sign out and back in. The error below can help identify the bad field.</p>
+            <pre className="mt-3 max-h-48 overflow-auto rounded-2xl bg-slate-100 p-3 text-xs text-slate-700">{String(this.state.error?.message || this.state.error)}</pre>
+            <button type="button" onClick={() => this.setState({ error: null })} className="mt-4 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Try rendering again</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [dataReady, setDataReady] = useState(!hasSupabase);
@@ -984,7 +1098,7 @@ export default function App() {
   }
 
   if (hasSupabase && !user) return <AuthScreen onAuth={handleAuth} />;
-  return <CampReadyApp user={user} initialData={initialData} cloudHydrated={cloudHydrated} onSignOut={handleSignOut} />;
+  return <AppErrorBoundary><CampReadyApp user={user} initialData={initialData} cloudHydrated={cloudHydrated} onSignOut={handleSignOut} /></AppErrorBoundary>;
 }
 
 function LoadingScreen() {
@@ -1075,7 +1189,7 @@ function ResetPasswordScreen({ onComplete, onSignOut }) {
 function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   // Keep raw sync metadata for merging, but strip it before initializing UI state.
   const rawInitialState = useMemo(() => sanitizeSeedData(initialData || loadSavedState()), [initialData]);
-  const uiInitialState = useMemo(() => stripSyncMetadata(rawInitialState), [rawInitialState]);
+  const uiInitialState = useMemo(() => normalizeStateForUi(stripSyncMetadata(rawInitialState)) || null, [rawInitialState]);
 
   const getInitial = (key, fallback) => {
     if (uiInitialState?.[key] !== undefined) return uiInitialState[key];
@@ -1097,7 +1211,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [activeTab, setActiveTab]           = useState("home");
   const [activeChecklist, setActiveChecklist] = useState("prep");
   const [trip, setTrip]                     = useState(() => clone(emptyTripState));
-  const [trips, setTrips]                   = useState(() => getInitial("trips", []));
+  const [trips, setTrips]                   = useState(() => asArray(getInitial("trips", [])));
   const [activeTripId, setActiveTripId]     = useState(null);
   const [appTemplate, setAppTemplate]       = useState(() => mergeTemplateDefaults(getInitial("appTemplate", checklistTemplates)));
   const [tasks, setTasks]                   = useState({});
@@ -1106,11 +1220,11 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const [recipes, setRecipes]               = useState([]);
   const [manualShoppingItems, setManualShoppingItems] = useState([]);
   const [shoppingStatuses, setShoppingStatuses] = useState([]);
-  const [maintenanceItems, setMaintenanceItems] = useState(() => getInitial("maintenanceItems", []));
-  const [rvConfig, setRvConfig]             = useState(() => getInitial("rvConfig", { rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" }));
-  const [towVehicle, setTowVehicle]         = useState(() => getInitial("towVehicle", { year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" }));
-  const [rvNotes, setRvNotes]               = useState(() => getInitial("rvNotes", []));
-  const [catScaleLogs, setCatScaleLogs]     = useState(() => getInitial("catScaleLogs", []));
+  const [maintenanceItems, setMaintenanceItems] = useState(() => asArray(getInitial("maintenanceItems", [])));
+  const [rvConfig, setRvConfig]             = useState(() => withObjectDefaults(getInitial("rvConfig", DEFAULT_RV_CONFIG), DEFAULT_RV_CONFIG));
+  const [towVehicle, setTowVehicle]         = useState(() => withObjectDefaults(getInitial("towVehicle", DEFAULT_TOW_VEHICLE), DEFAULT_TOW_VEHICLE));
+  const [rvNotes, setRvNotes]               = useState(() => asArray(getInitial("rvNotes", [])));
+  const [catScaleLogs, setCatScaleLogs]     = useState(() => asArray(getInitial("catScaleLogs", [])));
 
   // Checklist sidebar nav
   const checklistNav = useMemo(() => [
@@ -1119,7 +1233,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     { key: "towVehiclePrep", label: "Tow Vehicle Prep" },
     { key: "towVehiclePacking", label: "Tow Vehicle Packing" },
     { key: "departHome", label: "Depart Home" },
-    ...trip.destinations.flatMap((dest) => [
+    ...asArray(trip.destinations).flatMap((dest) => [
       { key: `destination-${dest.id}`, label: dest.name || "Destination", header: true },
       { key: `${dest.id}-campSetup`, label: "Camp Setup", level: 1 },
       { key: `${dest.id}-leaveCamp`, label: "Leave Camp", level: 1 },
@@ -1144,8 +1258,9 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   }, [tasks]);
 
   const sortedMeals = useMemo(() => recipes.slice().sort((a, b) => {
-    const ai = trip.destinations.findIndex((d) => d.id === a.destinationId);
-    const bi = trip.destinations.findIndex((d) => d.id === b.destinationId);
+    const safeDestinations = asArray(trip.destinations);
+    const ai = safeDestinations.findIndex((d) => d.id === a.destinationId);
+    const bi = safeDestinations.findIndex((d) => d.id === b.destinationId);
     const rank = { Breakfast: 1, Lunch: 2, Dinner: 3, Dessert: 4, Snack: 5, Drinks: 6 };
     return (ai - bi) || ((Number(a.dayNumber ?? a.night) || 1) - (Number(b.dayNumber ?? b.night) || 1)) || ((rank[a.type] || 99) - (rank[b.type] || 99)) || a.name.localeCompare(b.name);
   }), [recipes, trip.destinations]);
@@ -1246,15 +1361,15 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     suppressPushRef.current = true;
     saveState(merged);
     stateRef.current = merged;
-    const ui = stripSyncMetadata(merged) || {};
+    const ui = normalizeStateForUi(stripSyncMetadata(merged)) || {};
 
     if (ui.appTemplate !== undefined) setAppTemplate(mergeTemplateDefaults(ui.appTemplate));
-    if (ui.trips !== undefined) setTrips(ui.trips);
-    if (ui.maintenanceItems !== undefined) setMaintenanceItems(ui.maintenanceItems);
-    if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
-    if (ui.towVehicle !== undefined) setTowVehicle(ui.towVehicle);
-    if (ui.rvNotes !== undefined) setRvNotes(ui.rvNotes);
-    if (ui.catScaleLogs !== undefined) setCatScaleLogs(ui.catScaleLogs);
+    if (ui.trips !== undefined) setTrips(asArray(ui.trips));
+    if (ui.maintenanceItems !== undefined) setMaintenanceItems(asArray(ui.maintenanceItems));
+    if (ui.rvConfig !== undefined) setRvConfig(withObjectDefaults(ui.rvConfig, DEFAULT_RV_CONFIG));
+    if (ui.towVehicle !== undefined) setTowVehicle(withObjectDefaults(ui.towVehicle, DEFAULT_TOW_VEHICLE));
+    if (ui.rvNotes !== undefined) setRvNotes(asArray(ui.rvNotes));
+    if (ui.catScaleLogs !== undefined) setCatScaleLogs(asArray(ui.catScaleLogs));
 
     // Only refresh the open trip UI when explicitly requested. Automatic realtime
     // merges update the Trips records but do not overwrite fields the user may be
@@ -1791,8 +1906,8 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setManualShoppingItems([]);
     setShoppingStatuses([]);
     setMaintenanceItems([]);
-    setRvConfig({ rvType: "Travel Trailer", year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", heightFt: "", heightIn: "", lengthFt: "", lengthIn: "", height: "", length: "", gvwr: "", emptyWeight: "", trailerAxleLimit: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryType: "", batteryPurchaseDate: "", roofType: "", propaneTankQty: "", propaneTankCapacity: "", freshTankQty: "", freshTankCapacity: "", grayTankQty: "", grayTankCapacity: "", blackTankQty: "", blackTankCapacity: "", notes: "" });
-    setTowVehicle({ year: "", make: "", model: "", trim: "", vin: "", licensePlate: "", lengthFt: "", lengthIn: "", length: "", engine: "", fuelCapacity: "", tireSize: "", tireLoadRating: "", tirePsi: "", tirePurchaseDate: "", batteryPurchaseDate: "", gvwr: "", gcwr: "", frontGawr: "", rearGawr: "", hitchRating: "", hitchTongueRating: "", measuredTongueWeight: "", tongueWeightPercent: "", loadedTrailerWeight: "", loadedTowVehicleWeight: "" });
+    setRvConfig(clone(DEFAULT_RV_CONFIG));
+    setTowVehicle(clone(DEFAULT_TOW_VEHICLE));
     setRvNotes([]);
     setCatScaleLogs([]);
     setActiveTab("home");
@@ -1821,12 +1936,12 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
           </nav>
         )}
 
-        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} duplicateTrip={duplicateTrip} archiveTrip={archiveTrip} restoreArchivedTrip={restoreArchivedTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} onRefresh={refreshFromCloud} />}
+        {activeTab === "home"       && <HomePage trips={asArray(trips)} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} duplicateTrip={duplicateTrip} archiveTrip={archiveTrip} restoreArchivedTrip={restoreArchivedTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} onRefresh={refreshFromCloud} />}
         {activeTab === "template"   && <TemplateEditor appTemplate={appTemplate} setAppTemplate={setAppTemplate} goHome={() => setActiveTab("home")} />}
         {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "packing"    && <PackingView family={family} setFamily={setFamily} activeMember={activeMember} setActiveMember={setActiveMember} />}
-        {activeTab === "food"       && <FoodView trip={trip} destinations={trip.destinations} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
+        {activeTab === "food"       && <FoodView trip={trip} destinations={asArray(trip.destinations)} recipes={sortedMeals} setRecipes={setRecipes} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} toggleShoppingStatus={toggleShoppingStatus} manualShoppingItems={manualShoppingItems} setManualShoppingItems={setManualShoppingItems} />}
         {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} catScaleLogs={catScaleLogs} setCatScaleLogs={setCatScaleLogs} />}
         {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
