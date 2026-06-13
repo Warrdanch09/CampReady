@@ -314,6 +314,59 @@ const checklistTemplates = {
 
 const starterDestinations = [];
 
+
+function templateItemName(item) {
+  return typeof item === "string" ? item : item?.name || "";
+}
+
+function normalizeTemplateItem(item) {
+  if (typeof item === "string") return { name: item, hidden: false };
+  return { name: item?.name || "Checklist item", hidden: Boolean(item?.hidden) };
+}
+
+function mergeTemplateDefaults(savedTemplate) {
+  const saved = savedTemplate && typeof savedTemplate === "object" ? clone(savedTemplate) : {};
+  const merged = {};
+
+  Object.entries(checklistTemplates).forEach(([sectionKey, defaultSection]) => {
+    const savedSection = saved[sectionKey] || {};
+    const section = {
+      label: savedSection.label || defaultSection.label,
+      groups: {},
+    };
+
+    Object.entries(defaultSection.groups || {}).forEach(([groupName, defaultItems]) => {
+      const savedItems = Array.isArray(savedSection.groups?.[groupName]) ? savedSection.groups[groupName] : [];
+      const nextItems = savedItems.map(normalizeTemplateItem);
+      const existingNames = new Set(nextItems.map((item) => templateItemName(item).toLowerCase()));
+
+      defaultItems.forEach((defaultItem) => {
+        const name = templateItemName(defaultItem);
+        if (!existingNames.has(name.toLowerCase())) nextItems.push(normalizeTemplateItem(defaultItem));
+      });
+
+      section.groups[groupName] = nextItems;
+    });
+
+    Object.entries(savedSection.groups || {}).forEach(([groupName, savedItems]) => {
+      if (!section.groups[groupName]) section.groups[groupName] = (savedItems || []).map(normalizeTemplateItem);
+    });
+
+    merged[sectionKey] = section;
+  });
+
+  Object.entries(saved).forEach(([sectionKey, savedSection]) => {
+    if (!merged[sectionKey]) {
+      merged[sectionKey] = {
+        label: savedSection?.label || sectionKey,
+        groups: Object.fromEntries(Object.entries(savedSection?.groups || {}).map(([groupName, items]) => [groupName, (items || []).map(normalizeTemplateItem)])),
+      };
+    }
+  });
+
+  return merged;
+}
+
 const emptyTripState = { name: "", departureDate: "", destinations: [] };
 
 function isStarterTripRecord(trip) {
@@ -1077,14 +1130,18 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   // Overall progress stat
   const stats = useMemo(() => {
     let done = 0, total = 0;
-    Object.values(tasks).forEach((section) =>
-      Object.values(section).forEach((group) =>
-        group.forEach((task) => { if (!task.na) { total += 1; if (task.done) done += 1; } })
+    Object.values(tasks || {}).forEach((section) =>
+      Object.values(section || {}).forEach((group) =>
+        (group || []).forEach((task) => {
+          if (!task.na) {
+            total += 1;
+            if (task.done) done += 1;
+          }
+        })
       )
     );
-    family.forEach((member) => member.items.forEach((item) => { total += 1; if (item.packed) done += 1; }));
     return { done, total, percent: pct(done, total) };
-  }, [tasks, family]);
+  }, [tasks]);
 
   const sortedMeals = useMemo(() => recipes.slice().sort((a, b) => {
     const ai = trip.destinations.findIndex((d) => d.id === a.destinationId);
@@ -1191,7 +1248,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     stateRef.current = merged;
     const ui = stripSyncMetadata(merged) || {};
 
-    if (ui.appTemplate !== undefined) setAppTemplate(ui.appTemplate);
+    if (ui.appTemplate !== undefined) setAppTemplate(mergeTemplateDefaults(ui.appTemplate));
     if (ui.trips !== undefined) setTrips(ui.trips);
     if (ui.maintenanceItems !== undefined) setMaintenanceItems(ui.maintenanceItems);
     if (ui.rvConfig !== undefined) setRvConfig(ui.rvConfig);
@@ -1627,6 +1684,44 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
     setActiveTab("trip");
   };
 
+  const duplicateTrip = (id) => {
+    const source = trips.find((t) => t.id === id);
+    if (!source) return;
+    const copy = clone(source);
+    const newTrip = {
+      ...copy,
+      id: uid("trip"),
+      name: `Copy of ${source.name || "Trip"}`,
+      status: "Current",
+      createdAt: new Date().toLocaleDateString(),
+      archivedAt: undefined,
+      trashedAt: undefined,
+      deletedAt: undefined,
+    };
+    setTrips((prev) => [newTrip, ...prev.map((t) => ({ ...t, status: t.status === "Current" ? "Past" : t.status }))]);
+    setActiveTripId(newTrip.id);
+    loadTripRecordIntoUi(newTrip);
+    setActiveChecklist("prep");
+    setActiveTab("trip");
+  };
+
+  const archiveTrip = (id) => {
+    const tripToArchive = trips.find((t) => t.id === id);
+    const tripName = tripToArchive?.name || "this trip";
+    const confirmed = window.confirm(`Archive "${tripName}"? You can restore it from the archived trips section.`);
+    if (!confirmed) return;
+    const archivedAt = new Date().toISOString();
+    setTrips((prev) => prev.map((t) => (
+      t.id === id ? { ...t, status: "Archived", archivedAt, trashedAt: undefined, deletedAt: undefined } : t
+    )));
+    if (activeTripId === id) setActiveTab("home");
+  };
+
+  const restoreArchivedTrip = (id) => {
+    setTrips((prev) => prev.map((t) => (
+      t.id === id ? { ...t, status: "Past", archivedAt: undefined } : t
+    )));
+  };
 
   const trashTrip = (id) => {
     const tripToTrash = trips.find((t) => t.id === id);
@@ -1726,7 +1821,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
           </nav>
         )}
 
-        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} onRefresh={refreshFromCloud} />}
+        {activeTab === "home"       && <HomePage trips={trips} activeTripId={activeTripId} startTrip={startTrip} openTrip={openTrip} duplicateTrip={duplicateTrip} archiveTrip={archiveTrip} restoreArchivedTrip={restoreArchivedTrip} trashTrip={trashTrip} restoreTrip={restoreTrip} permanentlyDeleteTrip={permanentlyDeleteTrip} openTemplate={() => setActiveTab("template")} openMaintenance={() => setActiveTab("maintenance")} onRefresh={refreshFromCloud} />}
         {activeTab === "template"   && <TemplateEditor appTemplate={appTemplate} setAppTemplate={setAppTemplate} goHome={() => setActiveTab("home")} />}
         {activeTab === "trip"       && <TripDashboard tasks={tasks} family={family} shoppingList={shoppingList} shoppingChecks={shoppingStatusMap} setActiveTab={setActiveTab} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
         {activeTab === "checklists" && <ChecklistView tasks={tasks} setTasks={setTasks} activeChecklist={activeChecklist} setActiveChecklist={setActiveChecklist} navItems={checklistNav} />}
@@ -1802,8 +1897,9 @@ function MaintenanceHeader({ setActiveTab, syncStatus, user, onSignOut, onRefres
   );
 }
 
-function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restoreTrip, permanentlyDeleteTrip, openTemplate, openMaintenance, onRefresh }) {
-  const activeTrips = (trips || []).filter((t) => t.status !== "Trash" && t.status !== "Deleted");
+function HomePage({ trips, activeTripId, startTrip, openTrip, duplicateTrip, archiveTrip, restoreArchivedTrip, trashTrip, restoreTrip, permanentlyDeleteTrip, openTemplate, openMaintenance, onRefresh }) {
+  const activeTrips = (trips || []).filter((t) => t.status !== "Trash" && t.status !== "Deleted" && t.status !== "Archived");
+  const archivedTrips = (trips || []).filter((t) => t.status === "Archived");
   const trashedTrips = (trips || []).filter((t) => t.status === "Trash");
 
   return (
@@ -1838,7 +1934,11 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restore
                   <Trash2 size={16} />
                 </button>
               </div>
-              <button type="button" onClick={() => openTrip(t)} className="mt-4 w-full rounded-2xl bg-slate-900 px-4 py-2 font-semibold text-white">Open trip</button>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                <button type="button" onClick={() => openTrip(t)} className="rounded-2xl bg-slate-900 px-4 py-2 font-semibold text-white">Open</button>
+                <button type="button" onClick={() => duplicateTrip?.(t.id)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Duplicate</button>
+                <button type="button" onClick={() => archiveTrip?.(t.id)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Archive</button>
+              </div>
             </div>
           ))}
         </div>
@@ -1847,6 +1947,29 @@ function HomePage({ trips, activeTripId, startTrip, openTrip, trashTrip, restore
           <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
             No active trips. Create a new trip or restore one from the trash.
           </div>
+        )}
+
+        {archivedTrips.length > 0 && (
+          <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <summary className="cursor-pointer text-sm font-bold text-slate-700">Archived Trips ({archivedTrips.length})</summary>
+            <div className="mt-3 space-y-2">
+              {archivedTrips.map((t) => (
+                <div key={t.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-bold">{t.name}</div>
+                      <div className="text-xs text-slate-500">Archived {t.archivedAt ? new Date(t.archivedAt).toLocaleString() : "recently"}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => openTrip(t)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Open</button>
+                      <button type="button" onClick={() => restoreArchivedTrip?.(t.id)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Restore</button>
+                      <button type="button" onClick={() => duplicateTrip?.(t.id)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-slate-50">Duplicate</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         {trashedTrips.length > 0 && (
@@ -2721,62 +2844,9 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
   const estimatedTrailerAxleWeight = Math.max(0, trailerWeight - tongueWeight);
   const trailerAxleMargin = (Number(rvConfig.trailerAxleLimit) || 0) - estimatedTrailerAxleWeight;
 
-  const exportWeightData = () => {
-    const exportedAt = new Date().toISOString();
-    const dateStamp = exportedAt.slice(0, 10);
-    const calculatedCatScaleLogs = (catScaleLogs || []).map((log) => ({
-      ...log,
-      calculatedResults: calculateCatScaleResults(log, rvConfig, towVehicle),
-    }));
-
-    const payload = {
-      app: "CampReady",
-      exportType: "weight-data",
-      exportVersion: 1,
-      exportedAt,
-      rvConfig,
-      towVehicle,
-      currentEstimatedWeights: {
-        rvType: rvConfig.rvType,
-        loadedTrailerWeight: trailerWeight,
-        tongueOrPinWeight: tongueWeight,
-        tongueOrPinPercent: towVehicle.tongueWeightPercent || calculatedTonguePercent || defaultTonguePercent,
-        calculatedPayload,
-        gcwrMargin,
-        payloadMargin,
-        hitchMargin,
-        hitchTongueMargin,
-        trailerPayload,
-        trailerCargo,
-        estimatedTrailerAxleWeight,
-        trailerAxleMargin,
-      },
-      catScaleLogs: calculatedCatScaleLogs,
-    };
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `campready-weight-data-${dateStamp}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <CollapsibleCard title="Weight Ratings & Calculations" open={open.weight} onToggle={() => toggle("weight")}>
       <div className="space-y-4">
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={exportWeightData}
-            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            Export Weight Data
-          </button>
-        </div>
         <NestedSection title="Tow Vehicle" open={open.weightTow} onToggle={() => toggle("weightTow")}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <NumberField label={<HelpLabel label="GVWR (lb)" help="Gross Vehicle Weight Rating for the tow vehicle or motorhome." />} value={towVehicle.gvwr} onChange={(v) => setTowVehicle({ ...towVehicle, gvwr: v })} />
@@ -2812,9 +2882,14 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
         <CatScaleSection
           rvConfig={rvConfig}
           towVehicle={towVehicle}
+          setTowVehicle={setTowVehicle}
           logs={catScaleLogs}
           setLogs={setCatScaleLogs}
         />
+
+        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
+          Manual margins use the weight fields above. CAT Scale logs calculate their own real-world margins separately; use the CAT section's apply button when you want a saved scale entry to update the manual trailer/tongue fields.
+        </div>
 
         <NestedSection title="Margins" open={open.weightMargins} onToggle={() => toggle("weightMargins")}>
           <div className="grid gap-4 lg:grid-cols-2">
@@ -2842,13 +2917,18 @@ function WeightSection({ rvConfig, setRvConfig, towVehicle, setTowVehicle, catSc
   );
 }
 
-function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
+function CatScaleSection({ rvConfig, towVehicle, setTowVehicle, logs = [], setLogs }) {
   const [form, setForm] = useState(() => emptyCatScaleLog(rvConfig.rvType));
   const [selectedId, setSelectedId] = useState(null);
+  const [openMain, setOpenMain] = useState(false);
+  const [openEntry, setOpenEntry] = useState(true);
+  const [openResults, setOpenResults] = useState(true);
+  const [openHistory, setOpenHistory] = useState(true);
   const isFifthWheel = rvConfig.rvType === "Fifth Wheel";
   const isTravelTrailer = rvConfig.rvType === "Travel Trailer";
   const supported = isFifthWheel || isTravelTrailer;
-  const sortedLogs = (logs || []).slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const safeLogs = Array.isArray(logs) ? logs.filter((log) => log && typeof log === "object") : [];
+  const sortedLogs = safeLogs.slice().sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   const selectedLog = sortedLogs.find((log) => log.id === selectedId) || sortedLogs[0] || null;
   const selectedResults = selectedLog ? calculateCatScaleResults(selectedLog, rvConfig, towVehicle) : null;
 
@@ -2871,7 +2951,7 @@ function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
       createdAt: form.createdAt || now,
       updatedAt: now,
     };
-    setLogs((prev = []) => [nextLog, ...prev.filter((log) => log.id !== id)]);
+    setLogs((prev = []) => [nextLog, ...(Array.isArray(prev) ? prev : []).filter((log) => log.id !== id)]);
     setSelectedId(id);
     setForm(emptyCatScaleLog(rvConfig.rvType));
   };
@@ -2879,17 +2959,29 @@ function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
   const editLog = (log) => {
     setForm(clone(log));
     setSelectedId(log.id);
+    setOpenEntry(true);
   };
 
   const deleteLog = (id) => {
     const confirmed = window.confirm("Delete this CAT Scale log entry?");
     if (!confirmed) return;
-    setLogs((prev = []) => prev.filter((log) => log.id !== id));
+    setLogs((prev = []) => (Array.isArray(prev) ? prev : []).filter((log) => log.id !== id));
     if (selectedId === id) setSelectedId(null);
   };
 
+  const applySelectedToManualWeights = () => {
+    if (!selectedResults || !setTowVehicle) return;
+    setTowVehicle((prev) => ({
+      ...prev,
+      loadedTowVehicleWeight: selectedResults.finalTowVehicleWeight ? String(selectedResults.finalTowVehicleWeight) : prev.loadedTowVehicleWeight,
+      loadedTrailerWeight: selectedResults.estimatedTrailerWeight ? String(selectedResults.estimatedTrailerWeight) : prev.loadedTrailerWeight,
+      measuredTongueWeight: selectedResults.hitchLoad ? String(selectedResults.hitchLoad) : prev.measuredTongueWeight,
+      tongueWeightPercent: "",
+    }));
+  };
+
   return (
-    <NestedSection title="CAT Scale Logs" open={true} onToggle={() => {}}>
+    <NestedSection title="CAT Scale Logs" open={openMain} onToggle={() => setOpenMain((prev) => !prev)}>
       {!supported && (
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
           CAT Scale calculations are currently set up for Travel Trailer and Fifth Wheel RV types. Select one of those RV types to enter weigh-ins.
@@ -2898,40 +2990,57 @@ function CatScaleSection({ rvConfig, towVehicle, logs = [], setLogs }) {
 
       {supported && (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-3">
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              <Field label="Scale Date"><input className="w-full rounded-2xl border px-4 py-2" type="date" value={form.date || ""} onChange={(e) => updateForm("date", e.target.value)} /></Field>
-              <Field label="Trip / Reason"><input className="w-full rounded-2xl border px-4 py-2" value={form.reason || ""} placeholder="Rocky Mountains trip / loaded for camping" onChange={(e) => updateForm("reason", e.target.value)} /></Field>
-            </div>
-
-            <CatWeighInput title="Vehicle Only" values={form.vehicleOnly} onChange={(key, value) => updateForm(`vehicleOnly.${key}`, value)} includeTrailer={false} />
-            <CatWeighInput title={isFifthWheel ? "Vehicle + Fifth Wheel" : "Vehicle + Trailer, No Weight Distribution"} values={form.hitchedNoWd} onChange={(key, value) => updateForm(`hitchedNoWd.${key}`, value)} includeTrailer />
-            {isTravelTrailer && <CatWeighInput title="Vehicle + Trailer, With Weight Distribution" values={form.hitchedWd} onChange={(key, value) => updateForm(`hitchedWd.${key}`, value)} includeTrailer />}
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={saveLog} className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save CAT Scale Log</button>
-              {form.id && <button type="button" onClick={() => setForm(emptyCatScaleLog(rvConfig.rvType))} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold">Cancel Edit</button>}
-            </div>
-          </div>
-
-          {selectedResults && <CatScaleResults results={selectedResults} rvType={selectedLog.rvType || rvConfig.rvType} />}
-
-          <div className="space-y-2">
-            <div className="text-sm font-bold text-slate-700">Saved Weigh-In Log</div>
-            {!sortedLogs.length && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">No CAT Scale entries saved yet.</div>}
-            {sortedLogs.map((log) => (
-              <div key={log.id} className={`rounded-2xl border p-3 ${selectedLog?.id === log.id ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white"}`}>
-                <button type="button" onClick={() => setSelectedId(log.id)} className="w-full text-left">
-                  <div className="font-bold">{formatDisplayDate(log.date)} • {log.reason || "CAT Scale weigh-in"}</div>
-                  <div className="text-xs text-slate-500">{log.rvType || rvConfig.rvType}</div>
-                </button>
-                <div className="mt-3 flex gap-2">
-                  <button type="button" onClick={() => editLog(log)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold">Edit</button>
-                  <button type="button" onClick={() => deleteLog(log.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700">Delete</button>
-                </div>
+          <NestedSection title="Enter / Edit Weigh-In" open={openEntry} onToggle={() => setOpenEntry((prev) => !prev)}>
+            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+              <div className="mb-3 grid gap-3 sm:grid-cols-2">
+                <Field label="Scale Date"><input className="w-full rounded-2xl border px-4 py-2" type="date" value={form.date || ""} onChange={(e) => updateForm("date", e.target.value)} /></Field>
+                <Field label="Trip / Reason"><input className="w-full rounded-2xl border px-4 py-2" value={form.reason || ""} placeholder="Rocky Mountains trip / loaded for camping" onChange={(e) => updateForm("reason", e.target.value)} /></Field>
               </div>
-            ))}
-          </div>
+
+              <CatWeighInput title="Vehicle Only" values={form.vehicleOnly} onChange={(key, value) => updateForm(`vehicleOnly.${key}`, value)} includeTrailer={false} />
+              <CatWeighInput title={isFifthWheel ? "Vehicle + Fifth Wheel" : "Vehicle + Trailer, No Weight Distribution"} values={form.hitchedNoWd} onChange={(key, value) => updateForm(`hitchedNoWd.${key}`, value)} includeTrailer />
+              {isTravelTrailer && <CatWeighInput title="Vehicle + Trailer, With Weight Distribution" values={form.hitchedWd} onChange={(key, value) => updateForm(`hitchedWd.${key}`, value)} includeTrailer />}
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button type="button" onClick={saveLog} className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save CAT Scale Log</button>
+                {form.id && <button type="button" onClick={() => setForm(emptyCatScaleLog(rvConfig.rvType))} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold">Cancel Edit</button>}
+              </div>
+            </div>
+          </NestedSection>
+
+          <NestedSection title="Calculated Results" open={openResults} onToggle={() => setOpenResults((prev) => !prev)}>
+            {selectedResults ? (
+              <div className="space-y-3">
+                <CatScaleResults results={selectedResults} rvType={selectedLog.rvType || rvConfig.rvType} />
+                <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
+                  CAT Scale results are calculated independently from the manual margins. Apply this log only when you want the manual weight fields to use the selected scale data.
+                </div>
+                <button type="button" onClick={applySelectedToManualWeights} className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-slate-50">
+                  Apply selected CAT weights to manual fields
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">Save a CAT Scale log to see calculated results.</div>
+            )}
+          </NestedSection>
+
+          <NestedSection title={`Saved Weigh-In Log (${sortedLogs.length})`} open={openHistory} onToggle={() => setOpenHistory((prev) => !prev)}>
+            <div className="space-y-2">
+              {!sortedLogs.length && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">No CAT Scale entries saved yet.</div>}
+              {sortedLogs.map((log) => (
+                <div key={log.id} className={`rounded-2xl border p-3 ${selectedLog?.id === log.id ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white"}`}>
+                  <button type="button" onClick={() => setSelectedId(log.id)} className="w-full text-left">
+                    <div className="font-bold">{formatDisplayDate(log.date)} • {log.reason || "CAT Scale weigh-in"}</div>
+                    <div className="text-xs text-slate-500">{log.rvType || rvConfig.rvType}</div>
+                  </button>
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={() => editLog(log)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold">Edit</button>
+                    <button type="button" onClick={() => deleteLog(log.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700">Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </NestedSection>
         </div>
       )}
     </NestedSection>
@@ -2965,6 +3074,8 @@ function CatScaleResults({ results, rvType }) {
         <MarginCard label="Front GAWR margin" value={results.frontGawrMargin} active={results.hasFrontGawr} />
         <MarginCard label="Rear GAWR margin" value={results.rearGawrMargin} active={results.hasRearGawr} />
         <MarginCard label="GCWR margin" value={results.gcwrMargin} active={results.hasGcwr} />
+        <MarginCard label="GTWR / hitch tow margin" value={results.hitchTowMargin} active={results.hasHitchRating} />
+        <MarginCard label={rvType === "Fifth Wheel" ? "Hitch pin capacity margin" : "Hitch tongue capacity margin"} value={results.hitchTongueMargin} active={results.hasHitchTongueRating} />
         <MarginCard label="Trailer GVWR margin" value={results.trailerGvwrMargin} active={results.hasTrailerGvwr} />
         <MarginCard label="Trailer axle margin" value={results.trailerAxleMargin} active={results.hasTrailerAxleLimit} />
         {isTravelTrailer && <MarginCard label="Front axle restoration" value={results.frontAxleRestoration} active={results.hasWdAndNoWd} />}
@@ -3037,18 +3148,23 @@ function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
   const frontGawr = catNum(towVehicle.frontGawr);
   const rearGawr = catNum(towVehicle.rearGawr);
   const gcwr = catNum(towVehicle.gcwr);
+  const hitchRating = catNum(towVehicle.hitchRating);
+  const hitchTongueRating = catNum(towVehicle.hitchTongueRating);
   const trailerGvwr = catNum(rvConfig.gvwr);
   const trailerAxleLimit = catNum(rvConfig.trailerAxleLimit);
 
   return {
     vehicleOnlyWeight,
     combinedWeight,
+    finalTowVehicleWeight,
     hitchLoad,
     estimatedTrailerWeight,
     towVehicleGvwrMargin: towVehicleGvwr - finalTowVehicleWeight,
     frontGawrMargin: frontGawr - catNum(finalHitched?.front),
     rearGawrMargin: rearGawr - catNum(finalHitched?.drive),
     gcwrMargin: gcwr - combinedWeight,
+    hitchTowMargin: hitchRating - estimatedTrailerWeight,
+    hitchTongueMargin: hitchTongueRating - hitchLoad,
     trailerGvwrMargin: trailerGvwr - estimatedTrailerWeight,
     trailerAxleMargin: trailerAxleLimit - trailerAxleWeight,
     frontAxleRestoration,
@@ -3056,6 +3172,8 @@ function calculateCatScaleResults(log, rvConfig = {}, towVehicle = {}) {
     hasFrontGawr: !!frontGawr && !!catNum(finalHitched?.front),
     hasRearGawr: !!rearGawr && !!catNum(finalHitched?.drive),
     hasGcwr: !!gcwr && !!combinedWeight,
+    hasHitchRating: !!hitchRating && !!estimatedTrailerWeight,
+    hasHitchTongueRating: !!hitchTongueRating && !!hitchLoad,
     hasTrailerGvwr: !!trailerGvwr && !!estimatedTrailerWeight,
     hasTrailerAxleLimit: !!trailerAxleLimit && !!trailerAxleWeight,
     hasWdAndNoWd: isTravelTrailer && !!catTripleTotal(log.hitchedWd) && !!catTripleTotal(log.hitchedNoWd),
