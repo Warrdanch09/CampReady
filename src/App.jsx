@@ -1209,6 +1209,7 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
   const lastAppliedInitialRef = useRef(null); // tracks late cloud hydration after login/session restore
 
   const [activeTab, setActiveTab]           = useState("home");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeChecklist, setActiveChecklist] = useState("prep");
   const [trip, setTrip]                     = useState(() => clone(emptyTripState));
   const [trips, setTrips]                   = useState(() => asArray(getInitial("trips", [])));
@@ -1915,9 +1916,35 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-100 p-4 text-slate-900">
-      <div className="mx-auto max-w-6xl space-y-4">
-
+    <div className="cr-app-shell">
+      <aside className={`cr-sidebar ${mobileMenuOpen ? "cr-sidebar-open" : ""}`} aria-label="Main navigation">
+        <div className="cr-brand"><div className="cr-brand-mark"><Truck size={21} /></div><div><strong>CampReady</strong><small>ADVENTURE PLANNER</small></div><button type="button" className="cr-close-nav" onClick={() => setMobileMenuOpen(false)} aria-label="Close menu">×</button></div>
+        <div className="cr-nav-heading">EXPLORE</div>
+        <nav className="cr-main-nav">
+          {[
+            { id: "home", label: "Overview", icon: LayoutDashboard },
+            { id: "trip", label: "Trip Dashboard", icon: LayoutDashboard, needsTrip: true },
+            { id: "checklists", label: "Checklists", icon: ClipboardCheck, needsTrip: true },
+            { id: "packing", label: "Packing", icon: Users, needsTrip: true },
+            { id: "food", label: "Food & Shopping", icon: Utensils, needsTrip: true },
+            { id: "maintenance", label: "RV Maintenance", icon: Truck },
+            { id: "template", label: "Templates", icon: ClipboardCheck },
+            { id: "settings", label: "Settings", icon: Settings, needsTrip: true },
+          ].filter(item => !item.needsTrip || activeTripId).map(({ id, label, icon: Icon }) => (
+            <button key={id} type="button" className={`cr-nav-item ${activeTab === id ? "cr-active" : ""}`} onClick={() => { setActiveTab(id); setMobileMenuOpen(false); }}>
+              <Icon size={18} /><span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="cr-sidebar-note"><strong>Ready for the next adventure?</strong><span>Plan trips, pack smarter, and keep your RV ready.</span></div>
+      </aside>
+      {mobileMenuOpen && <button type="button" className="cr-nav-scrim" aria-label="Close navigation" onClick={() => setMobileMenuOpen(false)} />}
+      <main className="cr-main">
+        <div className="cr-topbar">
+          <div className="cr-topbar-title"><button type="button" className="cr-menu-button" aria-label="Open navigation" onClick={() => setMobileMenuOpen(true)}>☰</button><div><span>YOUR OUTDOOR COMPANION</span><h1>{({home:"Overview",trip:"Trip Dashboard",checklists:"Checklists",packing:"Packing",food:"Food & Shopping",maintenance:"RV Maintenance",template:"Templates",settings:"Settings"})[activeTab] || "CampReady"}</h1></div></div>
+          <div className="cr-topbar-status"><SyncBadge status={syncStatus} /></div>
+        </div>
+        <div className="cr-page-content">
         {activeTab === "home" ? (
           <HomeHeader syncStatus={syncStatus} user={user} onSignOut={onSignOut} onRefresh={refreshFromCloud} />
         ) : activeTab === "maintenance" ? (
@@ -1945,7 +1972,12 @@ function CampReadyApp({ user, initialData, cloudHydrated, onSignOut }) {
         {activeTab === "maintenance" && <MaintenanceView maintenanceItems={maintenanceItems} setMaintenanceItems={setMaintenanceItems} rvConfig={rvConfig} setRvConfig={setRvConfig} towVehicle={towVehicle} setTowVehicle={setTowVehicle} rvNotes={rvNotes} setRvNotes={setRvNotes} catScaleLogs={catScaleLogs} setCatScaleLogs={setCatScaleLogs} />}
         {activeTab === "settings"   && <SettingsView family={family} setFamily={setFamily} resetCheckboxesOnly={resetCheckboxesOnly} rebuildTrip={() => { setTasks(buildTasks(appTemplate, trip.destinations)); resetCheckboxesOnly(); }} resetAppData={resetAppData} exportBackup={exportBackup} importBackup={importBackup} user={user} onSignOut={onSignOut} />}
 
-      </div>
+        </div>
+      </main>
+      <nav className="cr-mobile-bottom" aria-label="Quick navigation">
+        {[{id:"home",label:"Home",icon:LayoutDashboard},{id:"trip",label:"Trip",icon:Truck},{id:"checklists",label:"Lists",icon:ClipboardCheck},{id:"packing",label:"Packing",icon:Users}].filter(item => item.id === "home" || activeTripId).map(({id,label,icon:Icon}) => <button key={id} type="button" className={activeTab === id ? "cr-active" : ""} onClick={() => setActiveTab(id)}><Icon size={19}/><span>{label}</span></button>)}
+        <button type="button" onClick={() => setMobileMenuOpen(true)}><Settings size={19}/><span>More</span></button>
+      </nav>
     </div>
   );
 }
