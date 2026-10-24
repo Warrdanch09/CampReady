@@ -1,3 +1,145 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* CampReady design system: Vehicle Life's structure, cooler outdoor identity.
+   These are UI-only styles; no trip, account, or synchronization data is altered. */
+:root {
+  font-family: "DM Sans", Inter, system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --cr-bg: #f1f5f4;
+  --cr-surface: #ffffff;
+  --cr-surface-alt: #f7faf9;
+  --cr-ink: #1b3035;
+  --cr-muted: #61777c;
+  --cr-line: #dce7e5;
+  --cr-accent: #285d5a;
+  --cr-accent-hover: #204e4d;
+  --cr-accent-soft: #e4f1ee;
+  --cr-header: #fbfcfc;
+  --cr-sidebar: #fbfdfc;
+  --cr-hero: #19383c;
+  --cr-shadow: 0 6px 25px rgba(24, 52, 54, .045);
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; background: var(--cr-bg); }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 3px solid #86b6ae; outline-offset: 2px;
+}
+.cr-app-shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100dvh; color: var(--cr-ink); background: var(--cr-bg); }
+.cr-sidebar { position: sticky; top: 0; z-index: 30; display: flex; flex-direction: column; height: 100dvh; padding: 26px 18px 20px; background: var(--cr-sidebar); border-right: 1px solid var(--cr-line); }
+.cr-brand { display: flex; align-items: center; gap: 12px; padding: 0 7px 33px; }
+.cr-brand-mark { display: grid; flex-shrink: 0; place-items: center; width: 40px; height: 40px; border-radius: 13px; background: var(--cr-accent); color: white; box-shadow: 0 8px 18px #285d5a30; }
+.cr-brand strong, .cr-brand small { display: block; }
+.cr-brand strong { font-size: 17px; line-height: 1.1; letter-spacing: -.35px; }
+.cr-brand small { margin-top: 5px; color: #819794; font-size: 9px; font-weight: 800; letter-spacing: 1.2px; }
+.cr-nav-heading { margin: 0 12px 9px; color: #91a09f; font-size: 10px; font-weight: 800; letter-spacing: 1.3px; }
+.cr-main-nav { display: grid; align-content: start; gap: 4px; overflow-y: auto; }
+.cr-nav-item { display: flex; align-items: center; gap: 11px; min-height: 44px; width: 100%; padding: 10px 12px; border: 0; border-radius: 12px; background: transparent; color: var(--cr-muted); font-size: 13px; font-weight: 700; text-align: left; transition: background .2s ease, color .2s ease; }
+.cr-nav-item:hover { color: var(--cr-ink); background: var(--cr-surface-alt); }
+.cr-nav-item.cr-active { color: var(--cr-accent); background: var(--cr-accent-soft); }
+.cr-sidebar-note { display: grid; gap: 6px; margin: auto 4px 12px; padding: 16px; border: 1px solid #cfdfda; border-radius: 17px; background: linear-gradient(145deg, #edf7f2, #e2eeeb); }
+.cr-sidebar-note strong { font-size: 13px; }
+.cr-sidebar-note span { color: #627f7b; font-size: 11px; line-height: 1.5; }
+.cr-main { min-width: 0; }
+.cr-topbar { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 90px; padding: 20px 38px; background: var(--cr-header); border-bottom: 1px solid var(--cr-line); }
+.cr-topbar-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cr-topbar-title span { display: block; margin-bottom: 4px; color: #819392; font-size: 10px; font-weight: 700; letter-spacing: .7px; }
+.cr-topbar-title h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.65px; line-height: 1.1; }
+.cr-topbar-status { white-space: nowrap; }
+.cr-page-content { max-width: 1320px; margin: 0 auto; padding: 28px 38px 55px; display: grid; gap: 18px; }
+.cr-menu-button, .cr-close-nav, .cr-mobile-bottom, .cr-nav-scrim { display: none; }
+
+/* Global Tailwind utilities already used across the CampReady pages become
+   theme-aware without changing business components or their stored data. */
+.cr-app-shell .bg-slate-100 { background: var(--cr-bg); }
+.cr-app-shell .bg-white { background: var(--cr-surface); }
+.cr-app-shell .bg-slate-50 { background: var(--cr-surface-alt); }
+.cr-app-shell .border-slate-200, .cr-app-shell .border-slate-300 { border-color: var(--cr-line); }
+.cr-app-shell .text-slate-900 { color: var(--cr-ink); }
+.cr-app-shell .text-slate-700 { color: #355257; }
+.cr-app-shell .text-slate-600, .cr-app-shell .text-slate-500 { color: var(--cr-muted); }
+.cr-app-shell .text-slate-400 { color: #849a9c; }
+.cr-app-shell .bg-slate-900 { background: var(--cr-accent); }
+.cr-app-shell .border-slate-900 { border-color: var(--cr-accent); }
+.cr-app-shell .hover\\:bg-slate-50:hover, .cr-app-shell .hover\\:bg-slate-100:hover { background: var(--cr-accent-soft); }
+.cr-app-shell .rounded-3xl.border.bg-white,
+.cr-app-shell .rounded-3xl.border.border-slate-200.bg-white {
+  border-radius: 19px; box-shadow: var(--cr-shadow);
+}
+.cr-app-shell .rounded-2xl { border-radius: 13px; }
+.cr-app-shell button.bg-slate-900:hover { background: var(--cr-accent-hover); }
+.cr-app-shell button:active { transform: translateY(1px); }
+.cr-page-content > header { padding: 25px 28px; border: 1px solid var(--cr-line); border-radius: 20px; box-shadow: var(--cr-shadow); }
+.cr-page-content > header h1 { letter-spacing: -.75px; }
+.cr-page-content > nav.grid { gap: 8px; }
+.cr-page-content > nav.grid > button { min-height: 62px; }
+.cr-page-content > div.space-y-4 > div.rounded-3xl:first-child { border-color: var(--cr-line); }
+
+/* Optional theme can be activated with data-theme="dark" on the document.
+   System appearance provides a dark experience out of the box. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cr-bg: #151e21; --cr-surface: #202c30; --cr-surface-alt: #26353a;
+    --cr-ink: #ecf3f2; --cr-muted: #b2c5c7; --cr-line: #34484b;
+    --cr-accent: #81b8af; --cr-accent-hover: #a4cbc4; --cr-accent-soft: #2a4544;
+    --cr-header: #1b292c; --cr-sidebar: #1b292c; --cr-hero: #1b3538;
+    --cr-shadow: 0 8px 25px rgba(0,0,0,.08);
+    color-scheme: dark;
+  }
+  .cr-app-shell .text-slate-700 { color: #d0dfdf; }
+  .cr-app-shell .text-slate-600, .cr-app-shell .text-slate-500 { color: var(--cr-muted); }
+  .cr-app-shell .bg-slate-900 { color: #12282a; }
+  .cr-sidebar-note { background: linear-gradient(145deg,#29413f,#223737); border-color: #3f5e59; }
+  .cr-sidebar-note span { color: #b3c9c4; }
+  .cr-brand small, .cr-nav-heading, .cr-topbar-title span { color: #9bb6b6; }
+  .cr-app-shell input, .cr-app-shell select, .cr-app-shell textarea {
+    background-color: var(--cr-surface-alt); color: var(--cr-ink); border-color: var(--cr-line);
+  }
+  .cr-app-shell .bg-green-50 { background: #263d35; }
+  .cr-app-shell .bg-red-50 { background: #3a292a; }
+  .cr-app-shell .bg-blue-50 { background: #243c48; }
+  .cr-app-shell .bg-amber-50 { background: #42392a; }
+}
+@media (max-width: 1050px) {
+  .cr-app-shell { grid-template-columns: 210px minmax(0,1fr); }
+  .cr-topbar { padding: 18px 24px; }
+  .cr-page-content { padding: 24px; }
+}
+@media (max-width: 800px) {
+  .cr-app-shell { display: block; }
+  .cr-sidebar { position: fixed; left: 0; top: 0; width: min(305px, 85vw); height: 100dvh; transform: translateX(-110%); transition: transform .2s ease; box-shadow: 18px 0 45px #081e2640; }
+  .cr-sidebar.cr-sidebar-open { transform: translateX(0); }
+  .cr-close-nav { display: block; margin-left: auto; padding: 7px; font-size: 25px; line-height: 1; color: var(--cr-ink); background: transparent; border: 0; }
+  .cr-menu-button { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border: 1px solid var(--cr-line); border-radius: 12px; background: var(--cr-surface); color: var(--cr-ink); font-size: 18px; }
+  .cr-nav-scrim { display: block; position: fixed; inset: 0; z-index: 25; background: #0b171c88; border: 0; }
+  .cr-topbar { min-height: 75px; padding: 14px 20px; }
+  .cr-topbar-title h1 { font-size: 19px; }
+  .cr-page-content { padding: 20px 20px 96px; }
+  .cr-page-content > nav.grid { display: none; }
+  .cr-mobile-bottom { position: fixed; z-index: 22; bottom: 0; left: 0; right: 0; display: flex; align-items: stretch; justify-content: space-around; padding: 7px 5px max(9px, env(safe-area-inset-bottom)); background: var(--cr-header); border-top: 1px solid var(--cr-line); box-shadow: 0 -7px 30px #102a2a18; }
+  .cr-mobile-bottom button { display: grid; place-items: center; flex: 1; min-width: 0; gap: 4px; min-height: 49px; border: 0; border-radius: 11px; background: transparent; color: var(--cr-muted); font-size: 10px; font-weight: 700; }
+  .cr-mobile-bottom button.cr-active { color: var(--cr-accent); background: var(--cr-accent-soft); }
+}
+@media (max-width: 540px) {
+  .cr-page-content { padding: 15px 13px 100px; gap: 13px; }
+  .cr-topbar { padding: 12px 14px; }
+  .cr-topbar-status { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+  .cr-page-content > header { padding: 18px 16px; }
+  .cr-page-content > header .flex.items-center.justify-between { flex-wrap: wrap; }
+  .cr-page-content > header .flex.items-center.gap-3 { flex-wrap: wrap; }
+  .cr-app-shell button, .cr-app-shell select { min-height: 40px; }
+  .cr-app-shell input, .cr-app-shell textarea { max-width: 100%; min-width: 0; }
+  .cr-app-shell .grid { min-width: 0; }
+  .cr-app-shell .shadow-sm { box-shadow: var(--cr-shadow); }
+  .cr-app-shell .text-2xl { font-size: 1.35rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
